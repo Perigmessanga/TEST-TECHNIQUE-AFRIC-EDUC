@@ -1,43 +1,76 @@
-# Passage — suivi hors ligne des élèves
+# PASSAGE — Smart School Attendance
 
-Prototype FastAPI/SQLite pour le sujet B « Passage » d'Afric'Éduc.
+Application de suivi hors ligne des passages d'élèves, développée avec React/TypeScript/Tailwind côté frontend et Django REST Framework côté backend.
 
-## Installation
+## Stack
+
+- Frontend : React, TypeScript, Vite, Tailwind CSS
+- Backend : Django, Django REST Framework
+- Développement : SQLite 3
+- Production : MySQL via les variables d'environnement
+- Authentification : sessions Django
+- Interface : rôles agent, responsable et parent
+
+## Lancer le backend
 
 ```powershell
-python -m pip install -r requirements.txt
+cd backend
+python -m pip install django djangorestframework django-cors-headers
+python manage.py migrate
 python seed.py
-python -m uvicorn app.main:app --reload
+python manage.py runserver 127.0.0.1:8001
 ```
 
-Ouvrir http://127.0.0.1:8000.
-
-## Comptes
-
-Tous les mots de passe sont `Test1234` : `responsable`, `agent`, `parent1`, `parent2`.
-
-## Tests
+## Lancer le frontend
 
 ```powershell
-python -m pytest -q
+cd frontend
+npm install
+npm run dev
 ```
+
+Ouvrir http://127.0.0.1:5173.
+
+## Comptes de test
+
+- Responsable : `responsable` / `Test1234`
+- Agent : `agent` / `Test1234`
+- Parent : `parent1` / `Test1234`
+
+## Base de données
+
+SQLite est utilisé en développement. Pour MySQL, définir `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_HOST` et `MYSQL_PORT`; Django bascule automatiquement vers MySQL lorsqu'une base est configurée.
 
 ## Sécurité
 
-Les mots de passe utilisent PBKDF2-SHA256 avec sel aléatoire, une longueur minimale de 8 caractères, une limitation à cinq essais et des erreurs d'identification identiques. Les cookies sont en HttpOnly avec expiration. Les rôles sont vérifiés côté API. La cloisonnement parent élève est appliquée par requête serveur. Les entrées Pydantic sont validées et SQLite reçoit des paramètres liés. Les sorties HTML sont sobres et les secrets sont dans des variables d'environnement. Les améliorations futures sont CSRF, rotation réelle des secrets, sessions Redis et durcissement HTTP.
+- Hachage Django des mots de passe
+- Rôle vérifié côté serveur
+- Session Django à durée limitée et déconnexion effective
+- Accès parent limité aux élèves liés
+- Badge HMAC tournant avec nonce unique et validité de 30 secondes
+- Entrées REST validées
+- ORM Django avec paramètres liés
+- Secrets chargés depuis les variables d'environnement
 
-## Badge
+## Validation
 
-Le badge utilise un nonce aléatoire signé HMAC avec expiration à 30 secondes. Une photographie devient inutilisable après expiration ou consommation. Le modèle est basé sur `serial + expires + nonce + signature` sans identifier statiquement l'élève lisible sur le support.
+```powershell
+cd backend
+python manage.py check
+cd ../frontend
+npm run build
+```
 
-## Mode dégradé
+La CI GitHub Actions doit exécuter les contrôles Django et React à chaque envoi.
 
-Sans `AI_API_KEY`, une synthèse exacte est produite par gabarit à partir des chiffres calculés en SQL. Une réponse IA est limitée à une nouvelle tentative, puis à ce gabarit. Les appels sont journalisés et plafonnés par `AI_MONTHLY_LIMIT`.
+## Éléments livrés
 
-## Intégration continue
-
-GitHub Actions installe Python, recharge les données de départ et exécute pytest à chaque push ou pull request.
-
-## Non terminé
-
-Interface hors ligne PWA complète, cron persistant, fournisseur SMS réel, interface responsable complète, tests Playwright et montage vidéo doivent être finalisés avant remise.
+- Interface responsive aux couleurs PASSAGE
+- Connexion par rôle
+- Interface agent hors ligne
+- File locale de synchronisation
+- Service Worker PWA prévu pour le mode hors ligne
+- Détection des anomalies
+- Synthèse IA avec gabarit de repli
+- Consultation parent cloisonnée
+- Historique Git régulier
