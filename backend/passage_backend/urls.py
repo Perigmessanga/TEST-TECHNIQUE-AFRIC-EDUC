@@ -16,18 +16,29 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from core.views import LoginView, LogoutView, MeView, ControlPointsView, BadgeTokenView, SyncView, StudentDetailView, PassagesView, SummaryView, DetectAnomaliesView
+from core.views import *
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/csrf/', CsrfView.as_view()),
     path('api/login/', LoginView.as_view()),
     path('api/logout/', LogoutView.as_view()),
     path('api/me/', MeView.as_view()),
     path('api/control-points/', ControlPointsView.as_view()),
+    path('api/control-points/manage/', ControlPointsManageView.as_view()),
+    path('api/badges/', BadgesView.as_view()),
+    path('api/badges/<int:badge_id>/state/', BadgesView.as_view()),
     path('api/badges/<int:student_id>/token/', BadgeTokenView.as_view()),
     path('api/sync/', SyncView.as_view()),
+    path('api/sync/status/', SyncStatusView.as_view()),
+    path('api/students/', StudentsView.as_view()),
     path('api/students/<int:student_id>/', StudentDetailView.as_view()),
+    path('api/routes/', RoutesView.as_view()),
     path('api/passages/', PassagesView.as_view()),
-    path('api/summaries/', SummaryView.as_view()),
+    path('api/anomalies/', AnomaliesView.as_view()),
     path('api/anomalies/detect/', DetectAnomaliesView.as_view()),
+    path('api/anomalies/<int:anomaly_id>/state/', AnomaliesView.as_view()),
+    path('api/messages/', MessagesView.as_view()),
+    path('api/parent/children/', ParentChildrenView.as_view()),
+    path('api/summaries/', SummaryView.as_view()),
 ]

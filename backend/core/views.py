@@ -7,11 +7,13 @@ from datetime import datetime
 from django.contrib.auth import authenticate, login, logout
 from django.db import transaction
 from django.utils import timezone
+from django.contrib.auth.models import User
+from django.middleware.csrf import get_token
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Anomaly, Badge, ControlPoint, Passage, ParentStudent, Route, ExceptionDay, Student, Summary
+from .models import Anomaly, Badge, ControlPoint, Passage, ParentStudent, Route, ExceptionDay, Student, Summary, OutgoingMessage, Establishment
 
 
 def role(user, *roles):
@@ -155,3 +157,129 @@ class DetectAnomaliesView(APIView):
             if not Anomaly.objects.filter(student=route.student,type='absence_attendue',date=today).exists():
                 Anomaly.objects.create(student=route.student,type='absence_attendue',date=today); count+=1
         return Response({'created':count})
+
+
+class CsrfView(APIView):
+    permission_classes = [AllowAny]
+    def get(self, request):
+        return Response({'csrfToken': get_token(request)})
+
+
+class StudentsView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        data=[]
+        for s in Student.objects.select_related('establishment'):
+            badge=Badge.objects.filter(student=s).first()
+            data.append({'id':s.id,'name':s.name,'class_name':s.class_name,'establishment':s.establishment.name,'state':s.state,'badge_state':badge.state if badge else 'aucun'})
+        return Response(data)
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        name=str(request.data.get('name','')).strip()
+        class_name=str(request.data.get('class_name','')).strip()
+        if len(name)<2 or len(class_name)<1:
+            return Response({'detail':'Nom ou classe invalide'}, status=400)
+        establishment=Establishment.objects.first()
+        if not establishment:
+            establishment=Establishment.objects.create(name='École Afric')
+        student=Student.objects.create(name=name,class_name=class_name,establishment=establishment)
+        serial=secrets.token_urlsafe(18)
+        Badge.objects.create(student=student,serial=serial,signing_secret=secrets.token_hex(32))
+        return Response({'id':student.id,'name':student.name,'badge_state':'actif'}, status=201)
+
+
+class BadgesView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        return Response([{'id':b.id,'student_id':b.student_id,'student':b.student.name,'state':b.state,'issued_at':b.issued_at.isoformat()} for b in Badge.objects.select_related('student').order_by('-issued_at')])
+    def post(self, request, badge_id=None):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        badge=Badge.objects.filter(id=badge_id).first()
+        if not badge:
+            return Response({'detail':'Badge introuvable'}, status=404)
+        badge.state=request.data.get('state','suspendu')
+        badge.save(update_fields=['state'])
+        return Response({'id':badge.id,'state':badge.state})
+
+
+class ControlPointsManageView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        return Response([{'id':p.id,'label':p.label,'type':p.type,'establishment':p.establishment.name} for p in ControlPoint.objects.select_related('establishment')])
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        label=str(request.data.get('label','')).strip()
+        type_name=str(request.data.get('type','portail')).strip()
+        if len(label)<2:
+            return Response({'detail':'Libellé invalide'}, status=400)
+        establishment=Establishment.objects.first()
+        point=ControlPoint.objects.create(establishment=establishment,label=label,type=type_name)
+        return Response({'id':point.id,'label':point.label,'type':point.type}, status=201)
+
+
+class RoutesView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        data=[{'id':r.id,'student_id':r.student_id,'student':r.student.name,'point':r.point.label,'sequence':r.sequence,'start_time':r.start_time.strftime('%H:%M'),'end_time':r.end_time.strftime('%H:%M'),'days':r.days} for r in Route.objects.select_related('student','point').order_by('student_id','sequence')]
+        return Response(data)
+
+
+class AnomaliesView(APIView):
+    def get(self, request):
+        if role(request.user, 'responsable'):
+            qs=Anomaly.objects.select_related('student','passage')
+        elif role(request.user, 'parent'):
+            ids=ParentStudent.objects.filter(parent=request.user).values_list('student_id',flat=True)
+            qs=Anomaly.objects.select_related('student','passage').filter(student_id__in=ids)
+        else:
+            return Response({'detail':'Accès interdit'}, status=403)
+        return Response([{'id':a.id,'student':a.student.name,'type':a.type,'date':a.date.isoformat(),'state':a.state,'passage_id':a.passage_id} for a in qs.order_by('-date','-id')])
+    def post(self, request, anomaly_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        anomaly=Anomaly.objects.filter(id=anomaly_id).first()
+        if not anomaly:
+            return Response({'detail':'Anomalie introuvable'}, status=404)
+        anomaly.state=request.data.get('state','traitée')
+        anomaly.save(update_fields=['state'])
+        return Response({'id':anomaly.id,'state':anomaly.state})
+
+
+class MessagesView(APIView):
+    def get(self, request):
+        if role(request.user, 'responsable'):
+            qs=OutgoingMessage.objects.select_related('parent','anomaly__student')
+        elif role(request.user, 'parent'):
+            qs=OutgoingMessage.objects.select_related('parent','anomaly__student').filter(parent=request.user)
+        else:
+            return Response({'detail':'Accès interdit'}, status=403)
+        return Response([{'id':m.id,'student':m.anomaly.student.name,'text':m.text,'state':m.state,'reason':m.reason,'created_at':m.created_at.isoformat()} for m in qs.order_by('-created_at')])
+
+
+class ParentChildrenView(APIView):
+    def get(self, request):
+        if not role(request.user, 'parent'):
+            return Response({'detail':'Accès réservé aux parents'}, status=403)
+        links=ParentStudent.objects.filter(parent=request.user).select_related('student','student__establishment')
+        data=[]
+        for link in links:
+            student=link.student
+            passages=Passage.objects.filter(badge__student=student).select_related('point').order_by('-server_time')[:10]
+            anomalies=Anomaly.objects.filter(student=student).order_by('-date','-id')[:10]
+            data.append({'id':student.id,'name':student.name,'class_name':student.class_name,'establishment':student.establishment.name,'passages':[{'point':p.point.label,'server_time':p.server_time.isoformat(),'state':p.state} for p in passages],'anomalies':[{'id':a.id,'type':a.type,'date':a.date.isoformat(),'state':a.state} for a in anomalies]})
+        return Response(data)
+
+
+class SyncStatusView(APIView):
+    def get(self, request):
+        if not role(request.user, 'agent','responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        passages=Passage.objects.all().order_by('-server_time')[:20]
+        return Response({'server_passages':Passage.objects.count(),'recent':[{'id':p.id,'student':p.badge.student.name,'point':p.point.label,'server_time':p.server_time.isoformat(),'state':p.state} for p in passages]})

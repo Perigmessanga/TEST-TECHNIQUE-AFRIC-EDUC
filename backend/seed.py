@@ -5,7 +5,7 @@ django.setup()
 from django.contrib.auth.models import User
 from core.models import *
 
-Student.objects.all().delete(); Establishment.objects.all().delete(); User.objects.exclude(is_superuser=True).delete()
+OutgoingMessage.objects.all().delete(); Anomaly.objects.all().delete(); Passage.objects.all().delete(); Route.objects.all().delete(); ExceptionDay.objects.all().delete(); ParentStudent.objects.all().delete(); Badge.objects.all().delete(); Student.objects.all().delete(); ControlPoint.objects.all().delete(); Establishment.objects.all().delete(); Summary.objects.all().delete(); AICall.objects.all().delete(); Profile.objects.all().delete(); User.objects.exclude(is_superuser=True).delete()
 est=Establishment.objects.create(name='École Afric')
 accounts=[('responsable','Responsable','responsable'),('agent','Agent','agent'),('parent1','Parent A','parent'),('parent2','Parent B','parent')]
 for username,name,role in accounts:
