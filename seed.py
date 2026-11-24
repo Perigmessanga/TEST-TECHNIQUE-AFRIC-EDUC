@@ -3,7 +3,7 @@ import secrets
 from app.main import hash_password, DB_PATH
 
 conn = sqlite3.connect(DB_PATH)
-conn.execute("DELETE FROM parent_students"); conn.execute("DELETE FROM badges"); conn.execute("DELETE FROM students"); conn.execute("DELETE FROM users"); conn.execute("DELETE FROM control_points")
+conn.execute("DELETE FROM parent_students"); conn.execute("DELETE FROM badges"); conn.execute("DELETE FROM students"); conn.execute("DELETE FROM users"); conn.execute("DELETE FROM control_points"); conn.execute("DELETE FROM routes"); conn.execute("DELETE FROM passages"); conn.execute("DELETE FROM anomalies"); conn.execute("DELETE FROM outgoing_messages"); conn.execute("DELETE FROM summaries"); conn.execute("DELETE FROM ai_calls")
 users = [
     ("Responsable","responsable","responsable"),
     ("Agent","agent","agent"),

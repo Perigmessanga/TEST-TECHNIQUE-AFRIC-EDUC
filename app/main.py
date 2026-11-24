@@ -165,11 +165,14 @@ class SyncBatch(BaseModel):
 @app.post("/api/sync")
 def sync(batch: SyncBatch, session=Depends(require_role("agent", "responsable")), conn=Depends(db)):
     accepted = duplicates = 0
+    accepted_events = []
+    duplicate_events = []
     rejected = []
     for item in batch.items:
         existing = conn.execute("SELECT id FROM passages WHERE local_event_id=?", (item.local_event_id,)).fetchone()
         if existing:
             duplicates += 1
+            duplicate_events.append(item.local_event_id)
             continue
         try:
             serial, expires_s, nonce, sig = item.badge_token.split(".")
@@ -193,8 +196,9 @@ def sync(batch: SyncBatch, session=Depends(require_role("agent", "responsable"))
             rejected.append({"event": item.local_event_id, "reason": "format_invalide"}); continue
         cur = conn.execute("INSERT INTO passages(badge_id,point_id,local_time,server_time,device_id,local_event_id,nonce,state) VALUES(?,?,?,?,?,?,?,?)", (badge["id"], item.point_id, item.local_time, utcnow().isoformat(), item.device_id, item.local_event_id, nonce, "synchronisé"))
         conn.commit(); accepted += 1
+        accepted_events.append(item.local_event_id)
         detect_duplicate(badge["id"], cur.lastrowid, conn)
-    return {"accepted": accepted, "duplicates": duplicates, "rejected": rejected}
+    return {"accepted": accepted, "duplicates": duplicates, "rejected": rejected, "accepted_events": accepted_events, "duplicate_events": duplicate_events}
 
 
 def detect_duplicate(badge_id: int, passage_id: int, conn):
@@ -222,8 +226,22 @@ def student_detail(student_id: int, session=Depends(auth), conn=Depends(db)):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return """<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><title>Passage</title><link rel='stylesheet' href='/static/app.css'><main><h1>Passage</h1><form id='login'><input name='login' placeholder='Identifiant' required><input name='password' type='password' minlength='8' required><button>Connexion</button></form><pre id='out'></pre></main><script src='/static/app.js'></script>"""
-
+    return """<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#155eef"><link rel="manifest" href="/static/manifest.webmanifest">
+<title>PASSAGE — Smart School Attendance</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><header><div class="brand-mark">P</div><div><h1>PASSAGE</h1><p>Smart School Attendance</p></div><span id="network" class="online">En ligne</span></header>
+<main><section id="loginView" class="card"><h2>Connexion</h2><p class="muted">Accès agent, responsable ou parent</p>
+<form id="login"><label>Identifiant<input name="login" autocomplete="username" required></label>
+<label>Mot de passe<input name="password" type="password" minlength="8" autocomplete="current-password" required></label>
+<button type="submit">Se connecter</button></form><p id="loginError" class="error"></p></section>
+<section id="appView" class="hidden"><div class="toolbar"><div><p class="eyebrow">Tableau de bord</p><h2 id="welcome">Bonjour</h2></div><button id="logout" class="secondary">Déconnexion</button></div>
+<div id="agentPanel" class="hidden"><div class="card"><h3>Scan hors ligne</h3><p class="muted">Les passages sont conservés localement puis synchronisés automatiquement.</p>
+<label>Point de contrôle<select id="point"></select></label><label>Jeton du badge affiché<input id="badgeToken" placeholder="Coller le jeton temporaire"></label>
+<button id="queueScan">Ajouter au passage hors ligne</button><p id="scanStatus"></p></div><div class="card"><h3>File locale <span id="queueCount" class="pill">0</span></h3><div id="queueList"></div><button id="syncNow">Synchroniser maintenant</button></div></div>
+<div id="responsablePanel" class="hidden"><div class="card"><h3>Anomalies du jour</h3><button id="detect">Détecter les absences à clôture</button><div id="anomalies"></div></div><div class="card"><h3>Synthèse IA</h3><label>Classe<input id="className" value="6eA"></label><label>Jour<input id="summaryDate" type="date"></label><button id="summary">Générer la synthèse</button><p id="summaryText" class="summary"></p></div></div>
+<div id="parentPanel" class="hidden"><div class="card"><h3>Mes enfants</h3><label>Identifiant élève<input id="studentId" type="number" min="1"></label><button id="loadStudent">Consulter</button><pre id="studentResult"></pre></div></div>
+</section></main><script src="/static/app.js"></script></body></html>"""
 
 class SummaryRequest(BaseModel):
     class_name: str = Field(min_length=1, max_length=30)
@@ -235,36 +253,28 @@ def create_summary(payload: SummaryRequest, session=Depends(require_role("respon
     existing = conn.execute("SELECT * FROM summaries WHERE class_name=? AND date=?", (payload.class_name, payload.date)).fetchone()
     if existing:
         return dict(existing)
-
     students = conn.execute("SELECT id FROM students WHERE class_name=?", (payload.class_name,)).fetchall()
+    present = retards = outside = 0
     ids = [row["id"] for row in students]
-    present = 0
-    retards = 0
-    outside = 0
     for student_id in ids:
-        rows = conn.execute("SELECT * FROM passages p JOIN badges b ON b.id=p.badge_id WHERE b.student_id=? AND p.server_time LIKE ?", (student_id, payload.date + "%")).fetchall()
+        rows = conn.execute("SELECT state FROM passages p JOIN badges b ON b.id=p.badge_id WHERE b.student_id=? AND p.server_time LIKE ?", (student_id, payload.date + "%")).fetchall()
         if rows:
             present += 1
         retards += sum(1 for row in rows if "retard" in row["state"])
         outside += sum(1 for row in rows if "hors" in row["state"])
     counts = {"eleves": len(ids), "present": present, "retards": retards, "sorties_hors_plage": outside}
-
     if os.getenv("AI_API_KEY"):
-        monthly_cost = conn.execute("SELECT COALESCE(SUM(cost),0) AS total FROM ai_calls WHERE at>=?", ((utcnow().replace(day=1)).isoformat(),)).fetchone()["total"]
-        if monthly_cost >= AI_MONTHLY_LIMIT:
-            text = fallback_summary(counts)
-            origin = "plafond"
+        total = conn.execute("SELECT COALESCE(SUM(cost),0) AS total FROM ai_calls WHERE at>=?", ((utcnow().replace(day=1)).isoformat(),)).fetchone()["total"]
+        if total >= AI_MONTHLY_LIMIT:
+            text = fallback_summary(counts); origin = "plafond"
         else:
-            prompt = "À partir uniquement de ce JSON, rédige une phrase française concise. Ne calcule rien: " + json.dumps(counts, ensure_ascii=False)
             try:
+                prompt = "À partir uniquement de ce JSON, rédige une phrase française concise. Ne calcule rien: " + json.dumps(counts, ensure_ascii=False)
                 response = httpx.post(os.getenv("AI_BASE_URL", "https://api.openai.com/v1/chat/completions"), headers={"Authorization": "Bearer " + os.getenv("AI_API_KEY", "")}, json={"model": os.getenv("AI_MODEL", "gpt-4o-mini"), "messages": [{"role":"user","content":prompt}], "temperature":0}, timeout=8)
                 response.raise_for_status()
-                data = response.json()
-                text = data["choices"][0]["message"]["content"]
-                usage = data.get("usage", {})
-                input_tokens = usage.get("prompt_tokens", 0)
-                output_tokens = usage.get("completion_tokens", 0)
-                cost = (input_tokens * 0.00000015) + (output_tokens * 0.00000060)
+                data = response.json(); text = data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {}); input_tokens = usage.get("prompt_tokens", 0); output_tokens = usage.get("completion_tokens", 0)
+                cost = input_tokens * 0.00000015 + output_tokens * 0.00000060
                 conn.execute("INSERT INTO ai_calls(at,model,input_tokens,output_tokens,cost,status) VALUES(?,?,?,?,?,?)", (utcnow().isoformat(), os.getenv("AI_MODEL", "gpt-4o-mini"), input_tokens, output_tokens, cost, "succès")); conn.commit()
                 if not validate_summary(text, counts):
                     raise ValueError("Synthèse contenant des chiffres non fiables")
@@ -284,25 +294,19 @@ def fallback_summary(counts):
 
 
 def validate_summary(text: str, counts: dict) -> bool:
-    # Un modèle ne peut utiliser que les chiffres fournis par la base.
-    if any(char.isdigit() for char in text):
-        return all(str(value) in text for value in counts.values())
-    return True
+    numbers = [str(value) for value in counts.values()]
+    return all(number in text for number in numbers)
 
 
 @app.post("/api/anomalies/detect")
 def detect_missed_windows(session=Depends(require_role("responsable")), conn=Depends(db)):
-    today = utcnow().date().isoformat()
-    count = 0
+    today = utcnow().date().isoformat(); count = 0
     for route in conn.execute("SELECT * FROM routes WHERE end_time <= ?", (utcnow().strftime("%H:%M"),)).fetchall():
-        exception = conn.execute("SELECT 1 FROM exceptions WHERE student_id=? AND date=?", (route["student_id"], today)).fetchone()
-        if exception:
+        if conn.execute("SELECT 1 FROM exceptions WHERE student_id=? AND date=?", (route["student_id"], today)).fetchone():
             continue
         passage = conn.execute("SELECT 1 FROM passages p JOIN badges b ON b.id=p.badge_id WHERE b.student_id=? AND p.point_id=? AND p.server_time LIKE ?", (route["student_id"], route["point_id"], today + "%")).fetchone()
-        if not passage:
-            exists = conn.execute("SELECT 1 FROM anomalies WHERE student_id=? AND type='absence_attendue' AND date=?", (route["student_id"], today)).fetchone()
-            if not exists:
-                conn.execute("INSERT INTO anomalies(student_id,type,date,state) VALUES(?,?,?,?)", (route["student_id"], "absence_attendue", today, "nouvelle")); count += 1
+        if not passage and not conn.execute("SELECT 1 FROM anomalies WHERE student_id=? AND type='absence_attendue' AND date=?", (route["student_id"], today)).fetchone():
+            conn.execute("INSERT INTO anomalies(student_id,type,date,state) VALUES(?,?,?,?)", (route["student_id"], "absence_attendue", today, "nouvelle")); count += 1
     conn.commit()
     return {"created": count}
 
@@ -315,4 +319,43 @@ def list_anomalies(session=Depends(auth), conn=Depends(db)):
         rows = conn.execute("SELECT * FROM anomalies").fetchall()
     else:
         raise HTTPException(403, "Agent: accès aux anomalies interdit")
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/anomalies/{anomaly_id}/notify")
+def notify_parent(anomaly_id: int, session=Depends(require_role("responsable")), conn=Depends(db)):
+    anomaly = conn.execute("SELECT * FROM anomalies WHERE id=?", (anomaly_id,)).fetchone()
+    if not anomaly:
+        raise HTTPException(404, "Anomalie introuvable")
+    today = utcnow().date().isoformat(); created = 0
+    for link in conn.execute("SELECT parent_id FROM parent_students WHERE student_id=?", (anomaly["student_id"],)).fetchall():
+        sent = conn.execute("SELECT COUNT(*) AS n FROM outgoing_messages WHERE parent_id=? AND created_at LIKE ? AND state='émis'", (link["parent_id"], today + "%")).fetchone()["n"]
+        limit = int(os.getenv("MESSAGE_DAILY_LIMIT", "5")); text = f"Information scolaire: anomalie de passage {anomaly['type']} enregistrée pour votre enfant."
+        if sent >= limit:
+            conn.execute("INSERT INTO outgoing_messages(parent_id,anomaly_id,text,state,reason,created_at) VALUES(?,?,?,?,?,?)", (link["parent_id"], anomaly_id, text, "bloqué", "plafond journalier", utcnow().isoformat()))
+        else:
+            conn.execute("INSERT INTO outgoing_messages(parent_id,anomaly_id,text,state,reason,created_at) VALUES(?,?,?,?,?,?)", (link["parent_id"], anomaly_id, text, "émis", None, utcnow().isoformat()))
+        created += 1
+    conn.commit()
+    return {"queued": created}
+
+
+@app.get("/api/messages")
+def list_messages(session=Depends(require_role("responsable")), conn=Depends(db)):
+    return [dict(row) for row in conn.execute("SELECT * FROM outgoing_messages ORDER BY created_at DESC")]
+
+
+@app.get("/api/control-points")
+def control_points(session=Depends(require_role("agent", "responsable")), conn=Depends(db)):
+    return [dict(row) for row in conn.execute("SELECT * FROM control_points")]
+
+
+@app.get("/api/passages")
+def list_passages(session=Depends(auth), conn=Depends(db)):
+    if session["role"] == "agent":
+        raise HTTPException(403, "Agent: lecture des passages interdite")
+    if session["role"] == "responsable":
+        rows = conn.execute("SELECT p.*, s.name AS student_name FROM passages p JOIN badges b ON b.id=p.badge_id JOIN students s ON s.id=b.student_id ORDER BY p.server_time DESC").fetchall()
+    else:
+        rows = conn.execute("SELECT p.*, s.name AS student_name FROM passages p JOIN badges b ON b.id=p.badge_id JOIN students s ON s.id=b.student_id JOIN parent_students ps ON ps.student_id=s.id WHERE ps.parent_id=? ORDER BY p.server_time DESC", (session["user_id"],)).fetchall()
     return [dict(row) for row in rows]
