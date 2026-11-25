@@ -1,36 +1,37 @@
-# Journal d'usage de l'IA — PASSAGE
+# Journal d'usage de l'intelligence artificielle — PASSAGE
 
-Ce journal rapporte les usages réellement effectués pendant le développement. Il ne présente pas une production vidéo ou un appel IA produit qui n'a pas eu lieu.
+Journal rédigé pour les travaux réellement présents dans le dépôt. Les intégrations externes non configurées ne sont pas déclarées comme testées.
 
-## Outils et usages
+## Outils utilisés
 
-- **GitHub Copilot Chat (assistant de programmation utilisé dans VS Code), 24–25 novembre 2026 :** aide à la lecture des fichiers existants, propositions de corrections Django/DRF, modèles, vues, migrations, tests ciblés, interface React et documentation. Les changements ont été appliqués au dépôt puis vérifiés par les commandes listées ci-dessous.
-- **Django 5.2.17 / Django REST Framework :** exécution des contrôles, génération de migrations et tests du backend.
-- **SQLite :** base de développement utilisée par Django et base isolée créée par le runner de tests.
-- **Vite, React et TypeScript :** compilation du frontend; `npm run build` a réussi après les changements d'interface.
-- **Chromium via l'outil browser-automation :** vérification réelle que `agent` / `Test1234` atteint le tableau de bord puis se déconnecte sans erreur console ni requête échouée. Cette vérification a révélé le problème de routage/proxy et a guidé la correction.
-- **GitHub Actions :** workflow présent dans le dépôt; le statut distant n'a pas été vérifié dans ce travail.
+- **GitHub Copilot Chat dans VS Code, 24–25 novembre 2026 :** lecture des changements existants, aide à la correction Django/DRF, création des migrations/tests, implémentation d'API et composants React, revues des erreurs TypeScript/Django et rédaction des décisions/documentation. Le code a été relu et vérifié par commandes locales.
+- **Django 5.2 / Django REST Framework :** `manage.py check`, tests API, commandes de migrations et commande de détection d'absences.
+- **SQLite :** base de test Django et base de développement; aucune migration de production n'a été exécutée.
+- **React, TypeScript, Vite et Tailwind :** interface par rôle, scan caméra QR (html5-qrcode), génération QR (qrcode.react), file offline, actions de gestion, build et ESLint.
+- **GitHub Actions :** workflow configuré pour exécuter les tests Python/Django, ESLint et le build frontend sur push et pull request. La dernière exécution distante consultée est verte pour le commit précédent; le changement actuel n'est pas encore poussé et devra déclencher une nouvelle exécution.
+- **Aucune IA vidéo n'a été utilisée dans ce passage de travail.** Les deux vidéos attendues restent à produire séparément et devront être ajoutées au journal avec les outils réellement utilisés.
 
-## Propositions refusées ou corrigées
+## Refus et corrections motivés
 
-1. **Ne pas déclarer une notification envoyée dès sa création.** Une première implémentation répondait `émis` après insertion en base, sans fournisseur appelé. Ce comportement a été remplacé par `pending`; le service de dispatch n'écrit `sent` et `sent_at` qu'après le retour réussi du fournisseur. Un échec est enregistré dans `failed` avec `last_error`.
-2. **Ne pas créer un nouveau badge avant d'invalider l'actif.** Avec la contrainte « un badge actif par élève », l'ordre initial pouvait violer l'intégrité de la base. La réémission a été mise dans une transaction : révocation de l'ancien, création du nouveau puis lien historique `replaced_by`. Une relation unique nullable `active_student` rend cette garantie compatible SQLite/MySQL; une migration rétro-remplit les lignes déjà existantes.
-3. **Corriger un test de limitation qui ne testait pas cinq échecs du même identifiant.** Le premier résultat était `200`, car le scénario avait réalisé quatre échecs sur `agent` et un autre sur un identifiant différent. Le test a été corrigé pour atteindre le seuil réel avant de vérifier le `429`.
+1. **Ne pas déclarer une notification envoyée après sa seule insertion en base.** Le statut a été conservé en `pending`; la transition vers `sent` et l'heure `sent_at` n'arrivent qu'après acceptation par le provider. L'absence de fournisseur SMTP laisse les notifications en attente.
+2. **Ne pas confier les statistiques au modèle.** Les effectifs, présences, retards et sorties hors plage sont calculés par Django. La sortie IA est contrainte à un objet JSON et rejetée si ses chiffres diffèrent; une seule nouvelle tentative précède le gabarit exact.
+3. **Ne pas conserver la courte expiration de 30 secondes pour la file hors ligne.** Elle rendrait les événements collectés sans réseau invalides au retour de connexion. Le TTL est configurable et fixé à huit heures par défaut pour une journée de service; cette amélioration n'élimine pas le risque de course à la première utilisation d'un QR copié, explicitement documenté dans `DECISIONS.md`.
+4. **Ne pas annoncer qu'une absence est détectée automatiquement au moment de la clôture sans ordonnanceur.** Une commande Django idempotente est fournie; l'horaire Task Scheduler/cron reste à configurer sur le serveur qui l'hébergera.
+5. **Ne pas confondre compilation réussie et absence de défaut visuel.** Les écrans ont été étoffés et compilent; un parcours navigateur complet couvrant les trois rôles et le scan caméra n'a pas été effectué dans cette session.
 
-## Vérifications réellement exécutées
+## Vérifications réellement exécutées pendant l'implémentation
 
-- `python manage.py check` : réussi.
-- `python manage.py makemigrations --check --dry-run` : aucune migration supplémentaire détectée après les migrations 0002 et 0003.
-- `python manage.py test core` : 11 tests réussis.
+- `python backend/manage.py check` : réussi.
+- `python backend/manage.py makemigrations --check --dry-run` : aucune migration manquante (aucun modèle modifié par cette tranche).
+- `python backend/manage.py test core` : 18 tests réussis, notamment rôles, cloisonnement parent, rattachement, réémission/nonce, anomalies, file de notifications, comptage de synthèse et idempotence de la commande d'absence.
 - `python -m pytest -q` : 4 tests historiques réussis.
-- `npm run build` : réussi pour le frontend React/TypeScript/Tailwind.
-- Inspection du resolver Django : 25 routes listées, aucun pattern dupliqué.
-- `python manage.py migrate --noinput` : migrations 0002 et 0003 appliquées après vérification que la cible était `django.db.backends.sqlite3` dans `backend/db.sqlite3`; aucune base de production/MySQL n'a été ciblée.
-- Le scénario de synchronisation couvre un événement malformé dans un lot contenant un événement valide; le rejet n'empêche pas l'enregistrement de l'événement valide.
-- Le frontend récupère le jeton CSRF Django et le transmet sur les requêtes authentifiées non sûres.
+- `npm run build` depuis `frontend` : réussi avec TypeScript; le lecteur caméra est produit dans un chunk différé distinct.
+- `npm run lint` depuis `frontend` : réussi sans erreur ni avertissement.
+- Le test de build ne remplace ni le test réel des autorisations caméra sur mobile ni un test réseau hors ligne multi-appareils.
 
-## Éléments non réalisés
+## Ce qui reste à tracer après livraison
 
-- Aucun outil d'IA vidéo (CapCut, Descript, ElevenLabs ou équivalent) n'a encore été utilisé; les deux vidéos attendues restent à produire.
-- Le backend Django utilise actuellement un gabarit exact pour les synthèses; aucun fournisseur LLM n'est appelé à l'exécution.
-- Aucun fournisseur SMS/e-mail n'est configuré; les messages restent en file `pending` jusqu'à l'intégration d'un fournisseur.
+- Un appel à un fournisseur LLM avec clé de test et vérification des coûts/réponses; en attendant, seul le gabarit est garanti en environnement local.
+- L'envoi SMTP réel; les commandes d'envoi existent, mais il faut configurer les secrets et une adresse joignable.
+- Le résultat GitHub Actions du commit contenant les changements de cette session, à contrôler après le push.
+- Enregistrement/montage de la démonstration technique et de la capsule communication, puis insertion des outils réellement utilisés et des liens partageables.

@@ -162,3 +162,12 @@ REST_FRAMEWORK = {
 LOGIN_FAILURE_LIMIT = int(os.getenv('LOGIN_FAILURE_LIMIT', '5'))
 LOGIN_FAILURE_WINDOW_SECONDS = int(os.getenv('LOGIN_FAILURE_WINDOW_SECONDS', '300'))
 MESSAGE_DAILY_LIMIT = int(os.getenv('MESSAGE_DAILY_LIMIT', '5'))
+BADGE_TOKEN_TTL_SECONDS = int(os.getenv('BADGE_TOKEN_TTL_SECONDS', str(8 * 60 * 60)))
+AI_DAILY_COST_LIMIT = os.getenv('AI_DAILY_COST_LIMIT', '0.10')
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() == 'true'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', '')

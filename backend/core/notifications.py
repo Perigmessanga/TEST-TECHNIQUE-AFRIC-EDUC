@@ -1,6 +1,8 @@
 from typing import Protocol
 
+from django.conf import settings
 from django.db import transaction
+from django.core.mail import send_mail
 from django.utils import timezone
 
 from .models import OutgoingMessage
@@ -18,6 +20,21 @@ class NotificationProviderUnavailable(Exception):
 class UnconfiguredNotificationProvider:
     def send(self, recipient: str, message: str) -> None:
         raise NotificationProviderUnavailable('Aucun fournisseur de notification configuré')
+
+
+class DjangoEmailProvider:
+    def send(self, recipient: str, message: str) -> None:
+        if not settings.EMAIL_HOST or not settings.DEFAULT_FROM_EMAIL:
+            raise NotificationProviderUnavailable('Configuration SMTP manquante')
+        sent = send_mail(
+            subject='Information scolaire PASSAGE',
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[recipient],
+            fail_silently=False,
+        )
+        if sent != 1:
+            raise RuntimeError('Le serveur SMTP n’a pas accepté le message')
 
 
 def dispatch_message(message_id: int, provider: NotificationProvider) -> OutgoingMessage:

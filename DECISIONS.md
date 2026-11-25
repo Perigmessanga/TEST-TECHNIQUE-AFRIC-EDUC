@@ -1,57 +1,58 @@
 # Décisions techniques — PASSAGE
 
-Ce document décrit les choix effectivement présents dans le dépôt au 25 novembre 2026. Les éléments indiqués comme limites ne sont pas présentés comme terminés.
+Choix effectivement matérialisés dans le dépôt. Les limites ci-dessous sont explicites et ne sont pas déclarées comme des fonctions terminées.
 
-## 1. Stack applicative
+## 1. Stack et séparation
 
-- **Option retenue :** React, TypeScript, Vite et Tailwind pour l'interface; Django REST Framework pour l'API.
-- **Option écartée :** FastAPI et un frontend HTML servi par le backend.
-- **Raison :** retenir les technologies que je peux maintenir et expliquer pendant la restitution. Le prototype FastAPI a été remplacé par Django/React; Django utilise les modèles ORM, l'authentification et les migrations.
+- **Retenu :** React/TypeScript/Vite/Tailwind et Django REST Framework.
+- **Écarté :** poursuivre le prototype FastAPI et son écran HTML.
+- **Raison :** utiliser le stack demandé et séparer interface, API et persistance.
 
-## 2. Bases de données
+## 2. Base de données
 
-- **Option retenue :** SQLite en développement; paramètres Django prévus pour MySQL quand les variables `MYSQL_*` sont renseignées.
-- **Option écartée :** imposer MySQL aux développeurs dès le démarrage.
-- **Raison :** rendre l'installation locale reproductible sans service externe. Le mode MySQL est configuré mais n'a pas été validé contre un serveur MySQL dans ce dépôt.
+- **Retenu :** SQLite en développement; sélection MySQL par variables `MYSQL_*` en déploiement.
+- **Écarté :** exiger un serveur MySQL pour chaque lancement local.
+- **Raison :** installation locale reproductible. Les migrations sont présentes, mais la configuration MySQL n'a pas été validée sur une instance de production.
 
-## 3. Badge et copie photographiée
+## 3. Identité et génération des QR
 
-- **Option retenue :** identifiant opaque, nonce aléatoire signé par HMAC, expiration de 30 secondes et consommation unique côté serveur.
-- **Option écartée :** QR statique contenant l'identifiant de l'élève.
-- **Raison :** le QR temporaire copié expire et un nonce déjà utilisé est refusé. L'endpoint de création de jeton est réservé au responsable; un fournisseur ou mécanisme de lecture QR caméra n'est pas encore intégré à l'interface.
+- **Retenu :** QR temporaire contenant un serial opaque, une expiration, un nonce et une signature HMAC; génération réservée au responsable; consommation du nonce une seule fois.
+- **Écarté :** QR statique contenant l'identifiant ou le nom de l'élève.
+- **Raison :** réduire la réutilisation et ne pas exposer l'identité dans le QR. Le TTL de huit heures par défaut sert le fonctionnement sur une journée sans réseau.
+- **Limite :** une copie du QR peut gagner la course au tout premier usage; l'usage unique empêche les réutilisations ultérieures, mais ne prouve pas l'appareil source. L'anti-copie absolu demande un challenge connecté ou une attestation matérielle.
 
-## 4. Réémission de badge
+## 4. Historique et réémission des badges
 
-- **Option retenue :** conserver chaque ancien badge, révoquer l'actif et créer le remplaçant dans une transaction; l'ancien pointe vers `replaced_by`. Le champ unique nullable `active_student` réserve l'élève uniquement au badge actif.
-- **Option écartée :** mettre à jour le même enregistrement ou supprimer l'ancien badge.
-- **Raison :** préserver l'historique et invalider l'ancien secret. La relation unique nullable garantit au plus un badge actif sur SQLite comme sur MySQL; la migration 0003 rétro-remplit les badges actifs existants.
+- **Retenu :** plusieurs enregistrements historiques via `ForeignKey`; un champ unique nullable réserve le badge actif par élève; la réémission révoque l'ancien, crée le nouveau et garde `replaced_by` dans une transaction.
+- **Écarté :** écraser l'ancien badge ou supprimer son historique.
+- **Raison :** invalider le secret précédent et conserver la piste de réémission. Migrations `0002` et `0003`.
 
 ## 5. Synchronisation et horloge
 
-- **Option retenue :** identifiant local d'événement unique et nonce unique; le serveur horodate la réception et rejette une heure locale écartée de plus d'une heure.
-- **Option écartée :** faire confiance à l'horloge de l'appareil ou créer un nouveau passage à chaque renvoi.
-- **Raison :** permettre le rejeu sans doublon et détecter les horloges manifestement fausses. La file locale React est stockée sur l'appareil; l'expiration courte du QR rend toutefois l'usage de scans acquis hors ligne limité et nécessite une évolution avant une vraie exploitation terrain.
+- **Retenu :** identifiant d'événement et nonce uniques en base; heure locale conservée, heure serveur utilisée comme référence; écart supérieur à une heure signalé comme anomalie `horloge_appareil`.
+- **Écarté :** rejeter la présence ou faire confiance à l'horloge de l'agent.
+- **Raison :** conserver l'événement et signaler l'incertitude sans laisser l'horloge du téléphone déterminer les statistiques. La file navigateur reste locale jusqu'à synchronisation.
 
-## 6. Détection des absences
+## 6. Détection des anomalies et absence
 
-- **Option retenue :** endpoint Django de détection idempotent qui ignore les journées avec exception et crée l'anomalie une seule fois.
-- **Option écartée :** lancer la détection uniquement à l'ouverture du tableau de bord, ou prétendre qu'une tâche automatique est déjà déployée.
-- **Raison :** séparer la logique serveur. **Limite :** aucun ordonnanceur/cron n'appelle actuellement cet endpoint automatiquement; la détection doit être déclenchée par un responsable.
+- **Retenu :** anomalies de point inattendu, passage hors fenêtre, double scan à moins de 60 secondes et horloge décalée lors de la synchronisation; détection des absences échues via endpoint et commande `python manage.py detect_absences`.
+- **Écarté :** prétendre qu'un ordonnanceur est déjà installé ou lancer la détection uniquement à l'ouverture du tableau de bord.
+- **Raison :** rendre le traitement d'absence répétable et idempotent. La commande doit encore être planifiée par l'exploitant (Task Scheduler/cron); aucun ordonnanceur n'est provisionné par le dépôt.
 
 ## 7. Notifications aux parents
 
-- **Option retenue :** boîte de sortie persistante, unique par parent/anomalie, avec états `pending`, `sending`, `sent`, `failed` et `suppressed`; plafond journalier configurable.
-- **Option écartée :** marquer immédiatement un message comme envoyé lors de sa simple création.
-- **Raison :** distinguer la mise en file de la livraison réelle. L'adaptateur fournisseur enregistre les erreurs et permet une nouvelle tentative; aucun service SMS/e-mail externe n'est configuré. Le message nouvellement créé reste donc `pending`, pas `sent`.
+- **Retenu :** boîte de sortie dédupliquée parent/anomalie, plafond quotidien, états `pending`, `sending`, `sent`, `failed`, `suppressed`; commande d'envoi SMTP explicite et adaptateur testable.
+- **Écarté :** annoncer qu'un message est livré lorsqu'il vient seulement d'être enregistré.
+- **Raison :** distinguer la mise en file de la remise au serveur de courrier. Sans SMTP configuré, le message reste `pending`; l'envoi réel n'a pas été testé.
 
-## 8. Cloisonnement par rôle
+## 8. Permissions et données enfants
 
-- **Option retenue :** vérifier le profil de rôle dans les vues API; filtrer les élèves, passages, anomalies et messages du parent côté serveur; refuser les statistiques à l'agent.
-- **Option écartée :** masquer uniquement les pages ou boutons dans React.
-- **Raison :** un changement d'identifiant ou un appel direct à l'API ne doit pas outrepasser les droits. Les tests couvrent les refus agent et l'accès parent croisé.
+- **Retenu :** rôles contrôlés dans Django; les parents ne voient que les élèves liés via `ParentStudent`; le responsable peut gérer ces liens; l'agent n'a pas accès aux anomalies, messages ou statistiques.
+- **Écarté :** faire reposer les droits sur le seul masquage d'éléments React.
+- **Raison :** protéger aussi les appels API directs et les identifiants modifiés dans l'URL.
 
-## 9. Synthèse quotidienne
+## 9. Synthèse quotidienne assistée
 
-- **Option retenue :** chiffres calculés par le backend et phrase exacte produite par gabarit local.
-- **Option écartée :** laisser un modèle inventer ou compter les chiffres sans contrôle.
-- **Raison :** garantir l'exactitude même sans clé ni réseau. **Limite :** aucun appel à un modèle de langage n'est actuellement réalisé par le backend Django; l'intégration IA produit reste à ajouter.
+- **Retenu :** backend calcule les quatre nombres depuis passages/itinéraires; gabarit exact sans clé; appel optionnel compatible OpenAI avec sortie JSON, contrôle strict des chiffres, une nouvelle tentative maximum, journal `AICall` et plafond journalier.
+- **Écarté :** laisser le modèle compter ou accepter un texte numérique non vérifié.
+- **Raison :** préserver l'exactitude et continuer sans réseau/clé. Le fournisseur réel n'a pas été appelé pendant les validations faute de clé de test; son comportement réseau n'est donc pas certifié en production.

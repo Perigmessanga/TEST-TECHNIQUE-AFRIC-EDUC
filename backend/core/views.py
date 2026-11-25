@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
@@ -16,6 +16,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Anomaly, Badge, ControlPoint, Passage, ParentStudent, Route, ExceptionDay, Student, Summary, OutgoingMessage, Establishment
+from .services import create_anomaly
+from .summary_ai import generate_summary_text
 
 
 def role(user, *roles):
@@ -75,7 +77,7 @@ class BadgeTokenView(APIView):
         if not badge:
             return Response({'detail':'Badge actif introuvable'}, status=404)
         nonce = secrets.token_urlsafe(16)
-        expires = int(time.time()) + 30
+        expires = int(time.time()) + settings.BADGE_TOKEN_TTL_SECONDS
         payload = f'{badge.serial}.{expires}.{nonce}'.encode()
         sig = hmac.new(badge.signing_secret.encode(), payload, hashlib.sha256).hexdigest()
         return Response({'token':payload.decode()+'.'+sig,'expires_at':expires})
@@ -122,8 +124,6 @@ class SyncView(APIView):
                     local=datetime.fromisoformat(local_value.replace('Z','+00:00'))
                     if timezone.is_naive(local):
                         local=timezone.make_aware(local, timezone.get_current_timezone())
-                    if abs((timezone.now()-local).total_seconds())>3600:
-                        rejected.append({'event':event,'reason':'heure_locale_invalide'}); continue
                     point_id=item['point_id']
                     if not isinstance(point_id, int) or point_id < 1:
                         raise ValueError('Point de contrôle invalide')
@@ -134,7 +134,14 @@ class SyncView(APIView):
                     rejected.append({'event':event,'reason':'format_invalide'}); continue
                 try:
                     with transaction.atomic():
-                        Passage.objects.create(badge=badge,point=point,local_time=local,device_id=device_id,local_event_id=event,nonce=nonce)
+                        passage = Passage.objects.create(
+                            badge=badge,
+                            point=point,
+                            local_time=local,
+                            device_id=device_id,
+                            local_event_id=event,
+                            nonce=nonce,
+                        )
                 except IntegrityError:
                     if Passage.objects.filter(local_event_id=event).exists():
                         duplicates += 1; duplicate_events.append(event)
@@ -142,6 +149,28 @@ class SyncView(APIView):
                         rejected.append({'event':event,'reason':'badge_deja_utilise'})
                     continue
                 accepted += 1; accepted_events.append(event)
+                server_now = timezone.localtime()
+                day = server_now.date()
+                weekday = ('L', 'M', 'M', 'J', 'V', 'S', 'D')[server_now.weekday()]
+                student = badge.student
+                day_routes = list(
+                    Route.objects.filter(student=student)
+                    .filter(days__contains=weekday)
+                    .select_related('point')
+                )
+                matching_routes = [route for route in day_routes if route.point_id == point.id]
+                if not matching_routes:
+                    create_anomaly(student, 'point_inattendu', day, passage)
+                elif not any(route.start_time <= server_now.time() <= route.end_time for route in matching_routes):
+                    create_anomaly(student, 'hors_fenetre', day, passage)
+                recent_duplicate = Passage.objects.filter(
+                    badge=badge,
+                    server_time__gte=server_now - timedelta(seconds=60),
+                ).exclude(pk=passage.pk).exists()
+                if recent_duplicate:
+                    create_anomaly(student, 'double_scan', day, passage)
+                if abs((timezone.now() - local).total_seconds()) > 3600:
+                    create_anomaly(student, 'horloge_appareil', day, passage)
         return Response({'accepted':accepted,'duplicates':duplicates,'rejected':rejected,'accepted_events':accepted_events,'duplicate_events':duplicate_events})
 
 
@@ -156,6 +185,27 @@ class StudentDetailView(APIView):
         if not student:
             return Response({'detail':'Élève introuvable'},status=404)
         return Response({'id':student.id,'name':student.name,'class_name':student.class_name,'establishment':student.establishment.name,'state':student.state})
+
+    def patch(self, request, student_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        student = Student.objects.filter(pk=student_id).first()
+        if not student:
+            return Response({'detail': 'Élève introuvable'}, status=404)
+        name = request.data.get('name', student.name)
+        class_name = request.data.get('class_name', student.class_name)
+        state = request.data.get('state', student.state)
+        if not isinstance(name, str) or not 2 <= len(name.strip()) <= 120:
+            return Response({'detail': 'Nom invalide'}, status=400)
+        if not isinstance(class_name, str) or not 1 <= len(class_name.strip()) <= 30:
+            return Response({'detail': 'Classe invalide'}, status=400)
+        if state not in ('actif', 'inactif'):
+            return Response({'detail': 'État invalide'}, status=400)
+        student.name = name.strip()
+        student.class_name = class_name.strip()
+        student.state = state
+        student.save(update_fields=['name', 'class_name', 'state'])
+        return Response({'id': student.id, 'name': student.name, 'class_name': student.class_name, 'state': student.state})
 
 
 class PassagesView(APIView):
@@ -174,16 +224,70 @@ class SummaryView(APIView):
     def post(self, request):
         if not role(request.user,'responsable'):
             return Response({'detail':'Accès refusé'},status=403)
-        class_name=request.data.get('class_name','6eA')
-        date=request.data.get('date',timezone.localdate().isoformat())
-        existing=Summary.objects.filter(class_name=class_name,date=date).first()
-        if existing:
-            return Response({'text':existing.text,'origin':existing.origin,'counts':existing.counts_json})
-        students=list(Student.objects.filter(class_name=class_name))
-        present=sum(1 for student in students if Passage.objects.filter(badge__student=student,server_time__date=date).exists())
-        counts={'eleves':len(students),'present':present,'retards':0,'sorties_hors_plage':0}
-        text=f"{counts['eleves']} élèves, {counts['present']} présents, {counts['retards']} retards au portail, {counts['sorties_hors_plage']} sorties hors plage."
-        summary=Summary.objects.create(class_name=class_name,date=date,counts_json=counts,text=text,origin='gabarit')
+        class_name = str(request.data.get('class_name', '')).strip()
+        if not class_name or len(class_name) > 30:
+            return Response({'detail': 'Classe invalide'}, status=400)
+        try:
+            summary_date = date.fromisoformat(str(request.data.get('date', timezone.localdate().isoformat())))
+        except ValueError:
+            return Response({'detail': 'Date invalide'}, status=400)
+
+        students = list(Student.objects.filter(class_name=class_name))
+        student_ids = [student.id for student in students]
+        summary_weekday = ('L', 'M', 'M', 'J', 'V', 'S', 'D')[summary_date.weekday()]
+        passages = list(
+            Passage.objects.filter(
+                badge__student_id__in=student_ids,
+                server_time__date=summary_date,
+            ).select_related('badge__student', 'point')
+        )
+        routes_by_student = {}
+        for route in Route.objects.filter(
+            student_id__in=student_ids,
+            days__contains=summary_weekday,
+        ).select_related('point').order_by('sequence'):
+            routes_by_student.setdefault(route.student_id, []).append(route)
+
+        passages_by_student = {}
+        for passage in passages:
+            passages_by_student.setdefault(passage.badge.student_id, []).append(passage)
+
+        present = 0
+        late_students = set()
+        late_exits = set()
+        for student in students:
+            student_passages = passages_by_student.get(student.id, [])
+            routes = routes_by_student.get(student.id, [])
+            if student_passages:
+                present += 1
+            if not routes:
+                continue
+            entry_route = routes[0]
+            exit_route = routes[-1]
+            for passage in student_passages:
+                server_local_time = timezone.localtime(passage.server_time).time()
+                if passage.point_id == entry_route.point_id and server_local_time > entry_route.end_time:
+                    late_students.add(student.id)
+                if passage.point_id == exit_route.point_id and not (
+                    exit_route.start_time <= server_local_time <= exit_route.end_time
+                ):
+                    late_exits.add(passage.id)
+
+        counts = {
+            'eleves': len(students),
+            'present': present,
+            'retards': len(late_students),
+            'sorties_hors_plage': len(late_exits),
+        }
+        existing = Summary.objects.filter(class_name=class_name, date=summary_date).first()
+        if existing and existing.counts_json == counts:
+            return Response({'text': existing.text, 'origin': existing.origin, 'counts': existing.counts_json})
+        text, origin = generate_summary_text(counts)
+        summary, _ = Summary.objects.update_or_create(
+            class_name=class_name,
+            date=summary_date,
+            defaults={'counts_json': counts, 'text': text, 'origin': origin},
+        )
         return Response({'text':summary.text,'origin':summary.origin,'counts':summary.counts_json})
 
 
@@ -191,16 +295,19 @@ class DetectAnomaliesView(APIView):
     def post(self, request):
         if not role(request.user,'responsable'):
             return Response({'detail':'Accès refusé'},status=403)
-        today=timezone.localdate(); now=timezone.localtime().time(); count=0
+        today = timezone.localdate()
+        now = timezone.localtime().time()
+        weekday = ('L', 'M', 'M', 'J', 'V', 'S', 'D')[today.weekday()]
+        count = 0
         for route in Route.objects.select_related('student','point'):
-            if route.end_time > now:
+            if weekday not in route.days or route.end_time > now:
                 continue
             if ExceptionDay.objects.filter(student=route.student,date=today).exists():
                 continue
             if Passage.objects.filter(badge__student=route.student,point=route.point,server_time__date=today).exists():
                 continue
-            if not Anomaly.objects.filter(student=route.student,type='absence_attendue',date=today).exists():
-                Anomaly.objects.create(student=route.student,type='absence_attendue',date=today); count+=1
+            _, created = create_anomaly(route.student, 'absence_attendue', today)
+            count += int(created)
         return Response({'created':count})
 
 
@@ -216,7 +323,7 @@ class StudentsView(APIView):
             return Response({'detail':'Accès refusé'}, status=403)
         data=[]
         for s in Student.objects.select_related('establishment'):
-            badge=Badge.objects.filter(student=s).first()
+            badge=Badge.objects.filter(student=s, state='actif').first()
             data.append({'id':s.id,'name':s.name,'class_name':s.class_name,'establishment':s.establishment.name,'state':s.state,'badge_state':badge.state if badge else 'aucun'})
         return Response(data)
     def post(self, request):
@@ -233,6 +340,49 @@ class StudentsView(APIView):
         serial=secrets.token_urlsafe(18)
         Badge.objects.create(student=student,serial=serial,signing_secret=secrets.token_hex(32))
         return Response({'id':student.id,'name':student.name,'badge_state':'actif'}, status=201)
+
+
+class ParentLinksView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        parents = User.objects.filter(profile__role='parent').order_by('username')
+        links = ParentStudent.objects.select_related('parent', 'student').order_by('student__name')
+        return Response({
+            'parents': [{'id': parent.id, 'username': parent.username} for parent in parents],
+            'links': [{
+                'id': link.id,
+                'parent_id': link.parent_id,
+                'parent': link.parent.username,
+                'student_id': link.student_id,
+                'student': link.student.name,
+            } for link in links],
+        })
+
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        try:
+            parent = User.objects.get(pk=int(request.data['parent_id']), profile__role='parent')
+            student = Student.objects.get(pk=int(request.data['student_id']))
+        except (User.DoesNotExist, Student.DoesNotExist, KeyError, TypeError, ValueError):
+            return Response({'detail': 'Compte parent ou élève introuvable'}, status=400)
+        link, created = ParentStudent.objects.get_or_create(parent=parent, student=student)
+        return Response({
+            'id': link.id,
+            'parent': parent.username,
+            'student': student.name,
+            'created': created,
+        }, status=201 if created else 200)
+
+    def delete(self, request, link_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        link = ParentStudent.objects.filter(pk=link_id).first()
+        if not link:
+            return Response({'detail': 'Rattachement introuvable'}, status=404)
+        link.delete()
+        return Response(status=204)
 
 
 class BadgesView(APIView):
@@ -257,6 +407,32 @@ class ControlPointsManageView(APIView):
         establishment=Establishment.objects.first()
         point=ControlPoint.objects.create(establishment=establishment,label=label,type=type_name)
         return Response({'id':point.id,'label':point.label,'type':point.type}, status=201)
+    def patch(self, request, point_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        point = ControlPoint.objects.filter(pk=point_id).first()
+        if not point:
+            return Response({'detail':'Point introuvable'}, status=404)
+        label = request.data.get('label', point.label)
+        type_name = request.data.get('type', point.type)
+        if not isinstance(label, str) or not 2 <= len(label.strip()) <= 100:
+            return Response({'detail':'Libellé invalide'}, status=400)
+        if type_name not in ('portail', 'autobus'):
+            return Response({'detail':'Type invalide'}, status=400)
+        point.label = label.strip()
+        point.type = type_name
+        point.save(update_fields=['label', 'type'])
+        return Response({'id':point.id,'label':point.label,'type':point.type})
+    def delete(self, request, point_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        point = ControlPoint.objects.filter(pk=point_id).first()
+        if not point:
+            return Response({'detail':'Point introuvable'}, status=404)
+        if Route.objects.filter(point=point).exists() or Passage.objects.filter(point=point).exists():
+            return Response({'detail':'Ce point est utilisé par un itinéraire ou un passage'}, status=409)
+        point.delete()
+        return Response(status=204)
 
 
 class RoutesView(APIView):
@@ -283,7 +459,10 @@ class AnomaliesView(APIView):
         anomaly=Anomaly.objects.filter(id=anomaly_id).first()
         if not anomaly:
             return Response({'detail':'Anomalie introuvable'}, status=404)
-        anomaly.state=request.data.get('state','traitée')
+        state = request.data.get('state', 'traitée')
+        if state not in ('nouvelle', 'en_cours', 'traitée', 'ignorée'):
+            return Response({'detail':'État invalide'}, status=400)
+        anomaly.state=state
         anomaly.save(update_fields=['state'])
         return Response({'id':anomaly.id,'state':anomaly.state})
 
@@ -296,7 +475,7 @@ class MessagesView(APIView):
             qs=OutgoingMessage.objects.select_related('parent','anomaly__student').filter(parent=request.user)
         else:
             return Response({'detail':'Accès interdit'}, status=403)
-        return Response([{'id':m.id,'student':m.anomaly.student.name,'text':m.text,'state':m.state,'reason':m.reason,'created_at':m.created_at.isoformat()} for m in qs.order_by('-created_at')])
+        return Response([{'id':m.id,'parent':m.parent.username,'student':m.anomaly.student.name,'text':m.text,'state':m.state,'reason':m.reason,'created_at':m.created_at.isoformat()} for m in qs.order_by('-created_at')])
 
 
 class ParentChildrenView(APIView):
@@ -367,20 +546,45 @@ class RouteManageView(APIView):
         try:
             student = Student.objects.get(id=request.data['student_id'])
             point = ControlPoint.objects.get(id=request.data['point_id'])
-        except (Student.DoesNotExist, ControlPoint.DoesNotExist, KeyError):
+            sequence = int(request.data.get('sequence', 1))
+            start_time = datetime.strptime(request.data.get('start_time', '07:00'), '%H:%M').time()
+            end_time = datetime.strptime(request.data.get('end_time', '07:45'), '%H:%M').time()
+            days = str(request.data.get('days', 'LMMJV')).strip().upper()
+        except (Student.DoesNotExist, ControlPoint.DoesNotExist, KeyError, TypeError, ValueError):
             return Response({'detail':'Élève ou point introuvable'}, status=400)
+        if sequence < 1 or start_time >= end_time or not days or any(day not in 'LMMJVSD' for day in days):
+            return Response({'detail':'Fenêtre, ordre ou jours invalides'}, status=400)
         route = Route.objects.create(
             student=student,
             point=point,
-            sequence=int(request.data.get('sequence', 1)),
-            start_time=request.data.get('start_time','07:00'),
-            end_time=request.data.get('end_time','07:45'),
-            days=str(request.data.get('days','LMMJV'))
+            sequence=sequence,
+            start_time=start_time,
+            end_time=end_time,
+            days=days
         )
         return Response({'id':route.id,'student':student.name,'point':point.label}, status=201)
+    def delete(self, request, route_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        route = Route.objects.filter(pk=route_id).first()
+        if not route:
+            return Response({'detail':'Itinéraire introuvable'}, status=404)
+        route.delete()
+        return Response(status=204)
 
 
 class ExceptionManageView(APIView):
+    def get(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        return Response([{
+            'id': item.id,
+            'student_id': item.student_id,
+            'student': item.student.name,
+            'date': item.date.isoformat(),
+            'kind': item.kind,
+        } for item in ExceptionDay.objects.select_related('student').order_by('-date')])
+
     def post(self, request):
         if not role(request.user, 'responsable'):
             return Response({'detail':'Accès refusé'}, status=403)

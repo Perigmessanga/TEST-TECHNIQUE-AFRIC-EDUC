@@ -1,15 +1,21 @@
 import secrets
+import json
+import os
+from datetime import datetime, time, timedelta
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
+from django.core.management import call_command
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import Anomaly, Badge, ControlPoint, Establishment, OutgoingMessage, ParentStudent, Profile, Student
+from .models import AICall, Anomaly, Badge, ControlPoint, Establishment, OutgoingMessage, ParentStudent, Passage, Profile, Route, Student
 from .notifications import dispatch_message
+from .summary_ai import _numbers_match, generate_summary_text
 
 
 class PassageAPITests(TestCase):
@@ -74,6 +80,21 @@ class PassageAPITests(TestCase):
 		self.assertEqual(own.status_code, 200)
 		self.assertEqual(other.status_code, 403)
 
+	def test_manager_can_link_a_parent_and_student(self):
+		self.authenticate_as(self.manager)
+		response = self.client.post('/api/parent-links/', {
+			'parent_id': self.other_parent.id,
+			'student_id': self.student.id,
+		}, format='json')
+		self.assertEqual(response.status_code, 201)
+		self.authenticate_as(self.other_parent)
+		children = self.client.get('/api/parent/children/')
+		self.assertEqual(children.status_code, 200)
+		self.assertEqual(
+			{child['id'] for child in children.data},
+			{self.student.id, self.other_student.id},
+		)
+
 	def test_badge_reissue_revokes_old_and_keeps_history(self):
 		self.authenticate_as(self.manager)
 		old_token = self.client.post(f'/api/badges/{self.student.id}/token/').data['token']
@@ -133,6 +154,146 @@ class PassageAPITests(TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(response.data['accepted'], 1)
 		self.assertEqual(response.data['rejected'][0]['reason'], 'identifiant_evenement_invalide')
+
+	def test_scan_creates_out_of_route_and_device_clock_anomalies(self):
+		self.authenticate_as(self.manager)
+		token = self.client.post(f'/api/badges/{self.student.id}/token/').data['token']
+		self.authenticate_as(self.agent)
+		local_time = timezone.now() - timedelta(hours=2)
+		response = self.client.post('/api/sync/', {'items': [{
+			'point_id': self.point.id,
+			'local_time': local_time.isoformat(),
+			'device_id': 'offline-device',
+			'badge_token': token,
+			'local_event_id': 'clock-skew-event-0001',
+		}]}, format='json')
+		self.assertEqual(response.data['accepted'], 1)
+		self.assertEqual(set(Anomaly.objects.filter(student=self.student).values_list('type', flat=True)), {
+			'point_inattendu', 'horloge_appareil',
+		})
+		self.assertEqual(OutgoingMessage.objects.filter(parent=self.parent, state='pending').count(), 2)
+
+	def test_scan_detects_double_scan_and_passage_outside_route_window(self):
+		today = timezone.localdate()
+		weekday = ('L', 'M', 'M', 'J', 'V', 'S', 'D')[today.weekday()]
+		Route.objects.create(
+			student=self.student,
+			point=self.point,
+			sequence=1,
+			start_time='00:01',
+			end_time='00:02',
+			days=weekday,
+		)
+		self.authenticate_as(self.manager)
+		first_token = self.client.post(f'/api/badges/{self.student.id}/token/').data['token']
+		self.authenticate_as(self.agent)
+		first = self.client.post('/api/sync/', {'items': [{
+			'point_id': self.point.id,
+			'local_time': timezone.now().isoformat(),
+			'device_id': 'scan-device',
+			'badge_token': first_token,
+			'local_event_id': 'double-scan-event-0001',
+		}]}, format='json')
+		self.assertEqual(first.data['accepted'], 1)
+
+		self.authenticate_as(self.manager)
+		second_token = self.client.post(f'/api/badges/{self.student.id}/token/').data['token']
+		self.authenticate_as(self.agent)
+		second = self.client.post('/api/sync/', {'items': [{
+			'point_id': self.point.id,
+			'local_time': timezone.now().isoformat(),
+			'device_id': 'scan-device',
+			'badge_token': second_token,
+			'local_event_id': 'double-scan-event-0002',
+		}]}, format='json')
+		self.assertEqual(second.data['accepted'], 1)
+		found = set(Anomaly.objects.filter(student=self.student).values_list('type', flat=True))
+		self.assertIn('hors_fenetre', found)
+		self.assertIn('double_scan', found)
+
+	def test_summary_calculates_counts_from_recorded_passages_and_is_idempotent(self):
+		exit_point = ControlPoint.objects.create(
+			establishment=self.establishment,
+			label='Portail sortie',
+			type='portail',
+		)
+		Badge.objects.create(student=self.other_student, serial='badge-student-b', signing_secret=secrets.token_hex(32))
+		Route.objects.create(student=self.student, point=self.point, sequence=1, start_time='07:00', end_time='07:45', days='LMMJVSD')
+		Route.objects.create(student=self.student, point=exit_point, sequence=2, start_time='15:30', end_time='16:15', days='LMMJVSD')
+		Route.objects.create(student=self.other_student, point=self.point, sequence=1, start_time='07:00', end_time='07:45', days='LMMJVSD')
+		Route.objects.create(student=self.other_student, point=exit_point, sequence=2, start_time='15:30', end_time='16:15', days='LMMJVSD')
+		today = timezone.localdate()
+		for badge, point, local_time, event_id in (
+			(self.badge, self.point, time(8, 0), 'summary-entry-event'),
+			(Badge.objects.get(student=self.other_student), exit_point, time(15, 0), 'summary-exit-event'),
+		):
+			passage = Passage.objects.create(
+				badge=badge,
+				point=point,
+				local_time=timezone.make_aware(datetime.combine(today, local_time)),
+				device_id='summary-test',
+				local_event_id=event_id,
+				nonce=f'nonce-{event_id}',
+			)
+			Passage.objects.filter(pk=passage.pk).update(
+				server_time=timezone.make_aware(datetime.combine(today, local_time))
+			)
+
+		self.authenticate_as(self.manager)
+		with patch('core.views.generate_summary_text', side_effect=lambda counts: ('summary', 'gabarit')) as generator:
+			first = self.client.post('/api/summaries/', {'class_name': '6eA', 'date': today.isoformat()}, format='json')
+			second = self.client.post('/api/summaries/', {'class_name': '6eA', 'date': today.isoformat()}, format='json')
+		self.assertEqual(first.status_code, 200)
+		self.assertEqual(first.data['counts'], {'eleves': 2, 'present': 2, 'retards': 1, 'sorties_hors_plage': 1})
+		self.assertEqual(second.data, first.data)
+		generator.assert_called_once()
+
+	def test_absence_command_is_idempotent_and_respects_schedule_day(self):
+		today = timezone.localdate()
+		weekday = ('L', 'M', 'M', 'J', 'V', 'S', 'D')[today.weekday()]
+		Route.objects.create(
+			student=self.student,
+			point=self.point,
+			sequence=1,
+			start_time='00:00',
+			end_time='00:01',
+			days=weekday,
+		)
+		call_command('detect_absences')
+		call_command('detect_absences')
+		self.assertEqual(Anomaly.objects.filter(student=self.student, type='absence_attendue', date=today).count(), 1)
+
+	def test_summary_ai_uses_fallback_without_key_and_rejects_changed_counts(self):
+		counts = {'eleves': 2, 'present': 1, 'retards': 1, 'sorties_hors_plage': 0}
+		with patch.dict(os.environ, {'OPENAI_API_KEY': ''}):
+			text, origin = generate_summary_text(counts)
+		self.assertEqual(origin, 'gabarit')
+		self.assertTrue(_numbers_match(text, counts))
+		self.assertFalse(_numbers_match('2 élèves, 2 présents, 1 retard, 0 sortie hors plage.', counts))
+
+	def test_summary_ai_retries_invalid_json_numbers_once_then_accepts_exact_result(self):
+		counts = {'eleves': 2, 'present': 1, 'retards': 1, 'sorties_hors_plage': 0}
+
+		def response(text):
+			result = MagicMock()
+			result.__enter__.return_value.read.return_value = json.dumps({
+				'choices': [{'message': {'content': json.dumps({'text': text})}}],
+				'usage': {'prompt_tokens': 20, 'completion_tokens': 30},
+			}).encode()
+			return result
+
+		with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}), patch(
+			'core.summary_ai.urllib.request.urlopen',
+			side_effect=[
+				response('2 élèves, 2 présents, 1 retard et 0 sortie.'),
+				response('2 élèves, 1 présent, 1 retard et 0 sortie hors plage.'),
+			],
+		) as provider:
+			text, origin = generate_summary_text(counts)
+		self.assertEqual(origin, 'modele')
+		self.assertTrue(_numbers_match(text, counts))
+		self.assertEqual(provider.call_count, 2)
+		self.assertEqual(AICall.objects.filter(status__in=['invalid_output', 'success']).count(), 2)
 
 	@override_settings(MESSAGE_DAILY_LIMIT=1)
 	def test_notifications_are_queued_deduplicated_and_capped(self):

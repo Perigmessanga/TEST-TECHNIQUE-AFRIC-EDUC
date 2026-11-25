@@ -1,78 +1,117 @@
 # PASSAGE — Smart School Attendance
 
-Application de suivi hors ligne des passages d'élèves, développée avec React/TypeScript/Tailwind côté frontend et Django REST Framework côté backend.
+Application de suivi des passages d'élèves par QR, avec espaces Agent, Responsable et Parent. Stack : React + TypeScript + Vite + Tailwind CSS, API Django REST Framework, SQLite en développement et configuration MySQL par variables d'environnement.
 
-## Stack
+## Démarrage local (Windows / PowerShell)
 
-- Frontend : React, TypeScript, Vite, Tailwind CSS
-- Backend : Django, Django REST Framework
-- Développement : SQLite 3
-- Production : MySQL via les variables d'environnement
-- Authentification : sessions Django
-- Interface : rôles agent, responsable et parent
-
-## Lancer le backend
+Depuis la racine du dépôt, dans un premier terminal :
 
 ```powershell
-cd backend
-python -m pip install django djangorestframework django-cors-headers
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Set-Location backend
 python manage.py migrate
 python seed.py
 python manage.py runserver 127.0.0.1:8001
 ```
 
-## Lancer le frontend
+`seed.py` réinitialise les données PASSAGE de la base configurée : l'utiliser uniquement sur une base locale jetable ou avant d'avoir des données à conserver.
+
+Dans un second terminal :
 
 ```powershell
-cd frontend
-npm install
+Set-Location frontend
+npm ci
 npm run dev
 ```
 
-Ouvrir http://127.0.0.1:5173.
+Ouvrir l'adresse locale annoncée par Vite (port 5173 par défaut). Le proxy Vite transmet `/api` à Django; ne pas ouvrir directement le backend pour utiliser l'interface.
 
-## Comptes de test
+## Comptes de démonstration
 
-- Responsable : `responsable` / `Test1234`
-- Agent : `agent` / `Test1234`
-- Parent : `parent1` / `Test1234`
-- Parent : `parent2` / `Test1234`
+| Rôle | Identifiant | Mot de passe |
+|---|---|---|
+| Responsable | `responsable` | `Test1234` |
+| Agent | `agent` | `Test1234` |
+| Parent | `parent1` | `Test1234` |
+| Parent | `parent2` | `Test1234` |
 
-## Base de données
+Les comptes et données d'exemple ne sont pas des identifiants de production.
 
-SQLite est utilisé en développement. Pour MySQL, définir `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_HOST` et `MYSQL_PORT`; Django bascule automatiquement vers MySQL lorsqu'une base est configurée.
+## Parcours fonctionnels
 
-## Sécurité
+- **Agent :** choisit un point, lit le QR avec la caméra ou saisit le jeton, conserve les événements dans `localStorage`, affiche l'état de synchronisation et synchronise à la reconnexion. La file accepte les lots/reprises; les événements rejetés sont laissés visibles pour correction.
+- **Responsable :** crée/modifie les élèves, rattache ou détache leurs parents, crée des points et itinéraires, ajoute des exceptions, génère des QR temporaires, réémet/suspend/réactive/révoque les badges, consulte les passages, détecte les absences échues, traite les anomalies, gère les notifications en file et génère une synthèse par classe/date.
+- **Parent :** voit uniquement ses enfants liés, leurs passages, anomalies et notifications enregistrées.
 
-- Hachage Django des mots de passe
-- Rôle vérifié côté serveur
-- Session Django à durée limitée et déconnexion effective
-- Accès parent limité aux élèves liés
-- Badge HMAC tournant avec nonce unique et validité de 30 secondes
-- Entrées REST validées
-- ORM Django avec paramètres liés
-- Secrets chargés depuis les variables d'environnement
+## Migrations et bases
 
-## Validation
+SQLite est sélectionné par défaut. Django choisit MySQL si `MYSQL_DATABASE` est défini; fournir également `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_HOST` et `MYSQL_PORT`. `mysqlclient` est dans les dépendances.
+
+Créer et relire les migrations avant déploiement :
 
 ```powershell
-cd backend
+Set-Location backend
+python manage.py makemigrations --check --dry-run
+python manage.py migrate --plan
+```
+
+Appliquer explicitement les migrations uniquement après sauvegarde et validation de l'environnement ciblé :
+
+```powershell
+python manage.py migrate
+```
+
+Aucun démarrage de l'application ne lance de migration automatiquement.
+
+## Fonctionnement planifié et notifications
+
+Après la clôture des fenêtres de passage, exécuter périodiquement :
+
+```powershell
+python manage.py detect_absences
+```
+
+Pour livrer les messages par SMTP, configurer `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` et `DEFAULT_FROM_EMAIL`, puis lancer :
+
+```powershell
+python manage.py dispatch_notifications
+```
+
+Sans SMTP, les messages restent `pending`; la file ne prétend pas qu'ils sont envoyés. Ces commandes ne sont pas lancées par un ordonnanceur inclus dans le projet : il faut les planifier sur le serveur (Task Scheduler/cron) si un traitement automatique est requis.
+
+## Synthèse assistée (optionnelle)
+
+Sans clé, le gabarit local exact reste disponible. Pour autoriser l'appel optionnel à une API compatible OpenAI, définir `OPENAI_API_KEY`, éventuellement `OPENAI_MODEL` et `OPENAI_BASE_URL`, ainsi que les tarifs `AI_INPUT_USD_PER_MILLION` / `AI_OUTPUT_USD_PER_MILLION` et le plafond quotidien `AI_DAILY_COST_LIMIT`. Le backend envoie uniquement des compteurs agrégés, valide le JSON et les chiffres, retente une fois, journalise chaque tentative dans `AICall` et revient au gabarit si la sortie échoue. Une synthèse identique déjà calculée n'est pas refacturée.
+
+L'intégration n'a pas été vérifiée contre un fournisseur réel sans clé; le mode de repli est le comportement de base.
+
+## Sécurité et limites à connaître
+
+- Mots de passe hachés par Django; session d'une heure, déconnexion et jeton CSRF.
+- Permissions vérifiées sur les vues API; cloisonnement parent/enfants effectué au serveur.
+- Limitation des tentatives de connexion paramétrable avec `LOGIN_FAILURE_LIMIT` et `LOGIN_FAILURE_WINDOW_SECONDS`.
+- Les jetons QR sont signés HMAC, à usage unique et expirent après `BADGE_TOKEN_TTL_SECONDS` (8 heures par défaut pour permettre un lot hors ligne sur une journée). Les scans utilisent l'heure de réception serveur pour les anomalies; un décalage d'horloge est signalé.
+- **Limite sécurité/offline :** un QR préémis hors ligne ne peut pas prouver quel écran l'a présenté. Son nonce empêche un second usage après synchronisation, mais une copie peut gagner la course au tout premier usage avant le vrai badge. Pour garantir une liaison à l'appareil source, il faut un mécanisme challenge-réponse connecté ou du matériel/attestation supplémentaire; ne pas présenter cette version comme une protection anti-copie absolue.
+- Le cache PWA porte sur les ressources Web, pas sur les réponses API. Il faut ouvrir l'application et charger le lecteur caméra avant la coupure réseau.
+- Le test local ne remplace pas un audit de sécurité ni un test sur un serveur MySQL.
+
+## Tests et intégration continue
+
+```powershell
+python -m pytest -q
+Set-Location backend
 python manage.py check
-cd ../frontend
+python manage.py test core
+Set-Location ..\frontend
+npm ci
+npm run lint
 npm run build
 ```
 
-La CI GitHub Actions doit exécuter les contrôles Django et React à chaque envoi.
+GitHub Actions exécute les tests historiques, les contrôles/tests Django, les migrations sur sa base CI éphémère, ESLint puis le build React à chaque `push` et `pull_request`. Vérifier l'état réel du workflow sur GitHub après le push avant de transmettre le lien du dépôt.
 
-## Éléments livrés
+## Livrables vidéo
 
-- Interface responsive aux couleurs PASSAGE
-- Connexion par rôle
-- Interface agent hors ligne
-- File locale de synchronisation
-- Service Worker PWA prévu pour le mode hors ligne
-- Détection des anomalies
-- Synthèse IA avec gabarit de repli
-- Consultation parent cloisonnée
-- Notifications enregistrées en file d'attente; aucun fournisseur SMS/e-mail n'est configuré, donc elles ne sont pas déclarées envoyées
-- Historique Git régulier
+Les vidéos de démonstration technique (≤ 6 min) et capsule de communication (60–90 s) sont des livrables séparés à enregistrer, monter et héberger. Elles ne sont pas produites par le dépôt.
