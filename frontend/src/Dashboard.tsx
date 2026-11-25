@@ -4,7 +4,9 @@ type Role='agent'|'responsable'|'parent'
 const QUEUE='passage-offline-queue-v1'
 
 const api=async(path:string,options:RequestInit={})=>{
- const response=await fetch(path,{credentials:'include',headers:{'Content-Type':'application/json',...(options.headers||{})},...options})
+ const csrfToken=document.cookie.split('; ').find(cookie=>cookie.startsWith('csrftoken='))?.split('=').slice(1).join('=')
+ const {headers,...requestOptions}=options
+ const response=await fetch(path,{...requestOptions,credentials:'include',headers:{'Content-Type':'application/json',...(csrfToken?{'X-CSRFToken':decodeURIComponent(csrfToken)}:{}),...(headers||{})}})
  const data=await response.json().catch(()=>({}))
  if(!response.ok) throw new Error(data.detail||'Une erreur est survenue')
  return data
@@ -28,7 +30,7 @@ export default function Dashboard(){
  useEffect(()=>{
   const up=()=>setOnline(true),down=()=>setOnline(false)
   window.addEventListener('online',up);window.addEventListener('offline',down)
-  api('/api/me/').then(d=>{setRole(d.role);setName(d.name)}).catch(()=>{})
+    api('/api/csrf/').catch(()=>undefined).then(()=>api('/api/me/')).then(d=>{setRole(d.role);setName(d.name)}).catch(()=>{})
   return()=>{window.removeEventListener('online',up);window.removeEventListener('offline',down)}
  },[])
  useEffect(()=>localStorage.setItem(QUEUE,JSON.stringify(queue)),[queue])

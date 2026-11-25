@@ -4,3 +4,7 @@ httpx==0.28.1
 pytest==8.3.4
 pytest-cov==6.0.0
 python-multipart==0.0.20
+Django==5.2.17
+djangorestframework==3.16.1
+django-cors-headers==4.9.0
+mysqlclient==2.2.7

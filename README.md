@@ -36,6 +36,7 @@ Ouvrir http://127.0.0.1:5173.
 - Responsable : `responsable` / `Test1234`
 - Agent : `agent` / `Test1234`
 - Parent : `parent1` / `Test1234`
+- Parent : `parent2` / `Test1234`
 
 ## Base de données
 
@@ -73,4 +74,5 @@ La CI GitHub Actions doit exécuter les contrôles Django et React à chaque env
 - Détection des anomalies
 - Synthèse IA avec gabarit de repli
 - Consultation parent cloisonnée
+- Notifications enregistrées en file d'attente; aucun fournisseur SMS/e-mail n'est configuré, donc elles ne sont pas déclarées envoyées
 - Historique Git régulier

@@ -17,11 +17,20 @@ class ParentStudent(models.Model):
         unique_together = ('parent', 'student')
 
 class Badge(models.Model):
-    student = models.OneToOneField(Student, on_delete=models.PROTECT)
+    student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name='badges')
+    active_student = models.OneToOneField(Student, null=True, blank=True, on_delete=models.PROTECT, related_name='active_badge')
     serial = models.CharField(max_length=80, unique=True)
     signing_secret = models.CharField(max_length=64)
-    state = models.CharField(max_length=20, default='actif')
+    state = models.CharField(max_length=20, choices=[('actif', 'Actif'), ('suspendu', 'Suspendu'), ('perdu', 'Perdu'), ('révoqué', 'Révoqué')], default='actif')
     issued_at = models.DateTimeField(auto_now_add=True)
+    replaced_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replaces')
+
+    def save(self, *args, **kwargs):
+        self.active_student_id = self.student_id if self.state == 'actif' else None
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            kwargs['update_fields'] = set(update_fields) | {'active_student'}
+        super().save(*args, **kwargs)
 
 class ControlPoint(models.Model):
     establishment = models.ForeignKey(Establishment, on_delete=models.PROTECT)
@@ -63,9 +72,18 @@ class OutgoingMessage(models.Model):
     parent = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     anomaly = models.ForeignKey(Anomaly, on_delete=models.CASCADE)
     text = models.TextField()
-    state = models.CharField(max_length=20)
-    reason = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=20, choices=[('pending', 'En attente'), ('sending', 'En cours'), ('sent', 'Envoyé'), ('failed', 'Échec'), ('suppressed', 'Plafonné')], default='pending')
+    reason = models.CharField(max_length=200, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['parent', 'anomaly'], name='one_notification_per_parent_anomaly'),
+        ]
 
 class Summary(models.Model):
     class_name = models.CharField(max_length=30)

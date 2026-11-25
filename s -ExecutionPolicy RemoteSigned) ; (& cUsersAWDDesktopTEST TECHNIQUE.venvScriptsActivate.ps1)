@@ -1,0 +1,33 @@
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex 64d87ba..9b52f91 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -1,11 +1,11 @@[m
+[31m-__pycache__/[m
+[31m-*.py[cod][m
+[31m-.pytest_cache/[m
+[31m-.env[m
+[31m-passage.db[m
+[31m-htmlcov/[m
+[31m-backend/db.sqlite3[m
+[31m-.venv/[m
+[32m+[m[32m__pycache__/[m
+[32m+[m[32m*.py[cod][m
+[32m+[m[32m.pytest_cache/[m
+[32m+[m[32m.env[m
+[32m+[m[32mpassage.db[m
+[32m+[m[32mhtmlcov/[m
+[32m+[m[32mbackend/db.sqlite3[m
+[32m+[m[32m.venv/[m
+ [m
+ # Frontend[m
+ node_modules/[m
+[36m@@ -19,6 +19,6 @@[m [mbuild/[m
+ # Logs[m
+ *.log[m
+ [m
+[31m-# Fichiers système[m
+[32m+[m[32m# Fichiers systï¿½me[m
+ .DS_Store[m
+[31m-Thumbs.db[m
+[32m+[m[32mThumbs.db[m

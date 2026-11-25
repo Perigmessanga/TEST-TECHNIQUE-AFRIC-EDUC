@@ -4,8 +4,10 @@ import secrets
 import time
 from datetime import datetime
 
+from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
-from django.db import transaction
+from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.middleware.csrf import get_token
@@ -23,10 +25,24 @@ def role(user, *roles):
 class LoginView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
-        user = authenticate(request, username=request.data.get('login',''), password=request.data.get('password',''))
-        if not user:
+        username = str(request.data.get('login', '')).strip()[:150]
+        password = str(request.data.get('password', ''))
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        key_digest = hashlib.sha256(f'{client_ip}:{username.casefold()}'.encode()).hexdigest()
+        attempt_key = f'passage:login:fail:{key_digest}'
+        if cache.get(attempt_key, 0) >= settings.LOGIN_FAILURE_LIMIT:
+            return Response({'detail':'Identifiants invalides'}, status=429)
+
+        user = authenticate(request, username=username, password=password)
+        if not user or not hasattr(user, 'profile'):
+            try:
+                cache.incr(attempt_key)
+            except ValueError:
+                cache.add(attempt_key, 1, timeout=settings.LOGIN_FAILURE_WINDOW_SECONDS)
             return Response({'detail':'Identifiants invalides'}, status=401)
+        cache.delete(attempt_key)
         login(request, user)
+        request.session.set_expiry(3600)
         return Response({'ok':True,'role':user.profile.role,'name':user.get_full_name() or user.username})
 
 
@@ -37,7 +53,10 @@ class LogoutView(APIView):
 
 
 class MeView(APIView):
+    permission_classes = [AllowAny]
     def get(self, request):
+        if not request.user.is_authenticated or not hasattr(request.user, 'profile'):
+            return Response({'authenticated':False})
         return Response({'name':request.user.get_full_name() or request.user.username,'role':request.user.profile.role})
 
 
@@ -50,7 +69,7 @@ class ControlPointsView(APIView):
 
 class BadgeTokenView(APIView):
     def post(self, request, student_id):
-        if not role(request.user,'responsable','agent'):
+        if not role(request.user,'responsable'):
             return Response({'detail':'Accès refusé'}, status=403)
         badge = Badge.objects.filter(student_id=student_id,state='actif').first()
         if not badge:
@@ -58,7 +77,7 @@ class BadgeTokenView(APIView):
         nonce = secrets.token_urlsafe(16)
         expires = int(time.time()) + 30
         payload = f'{badge.serial}.{expires}.{nonce}'.encode()
-        sig = hmac.new(badge.signing_secret.encode(), payload, hashlib.sha256).hexdigest()[:16]
+        sig = hmac.new(badge.signing_secret.encode(), payload, hashlib.sha256).hexdigest()
         return Response({'token':payload.decode()+'.'+sig,'expires_at':expires})
 
 
@@ -73,29 +92,55 @@ class SyncView(APIView):
         accepted_events=[]; duplicate_events=[]; rejected=[]
         with transaction.atomic():
             for item in items:
+                if not isinstance(item, dict):
+                    rejected.append({'event':None,'reason':'format_invalide'})
+                    continue
                 event = item.get('local_event_id','')
+                if not isinstance(event, str) or not event.strip() or len(event) > 100:
+                    rejected.append({'event':None,'reason':'identifiant_evenement_invalide'})
+                    continue
                 if Passage.objects.filter(local_event_id=event).exists():
                     duplicates += 1; duplicate_events.append(event); continue
                 try:
-                    serial,expires_s,nonce,sig=item['badge_token'].split('.')
+                    token = item['badge_token']
+                    device_id = item['device_id']
+                    if not isinstance(token, str) or len(token) > 300 or not isinstance(device_id, str) or not device_id.strip() or len(device_id) > 100:
+                        raise ValueError('Champs de synchronisation invalides')
+                    serial,expires_s,nonce,sig=token.split('.')
                     badge=Badge.objects.filter(serial=serial,state='actif').first()
                     if not badge:
                         rejected.append({'event':event,'reason':'badge_invalide'}); continue
                     payload=f'{serial}.{expires_s}.{nonce}'.encode()
-                    expected=hmac.new(badge.signing_secret.encode(),payload,hashlib.sha256).hexdigest()[:16]
+                    expected=hmac.new(badge.signing_secret.encode(),payload,hashlib.sha256).hexdigest()
                     if int(expires_s)<int(time.time()) or not hmac.compare_digest(expected,sig):
                         rejected.append({'event':event,'reason':'badge_expire_ou_invalide'}); continue
                     if Passage.objects.filter(nonce=nonce).exists():
                         rejected.append({'event':event,'reason':'badge_deja_utilise'}); continue
-                    local=datetime.fromisoformat(item['local_time'].replace('Z','+00:00'))
+                    local_value=item['local_time']
+                    if not isinstance(local_value, str) or len(local_value) > 40:
+                        raise ValueError('Heure locale invalide')
+                    local=datetime.fromisoformat(local_value.replace('Z','+00:00'))
+                    if timezone.is_naive(local):
+                        local=timezone.make_aware(local, timezone.get_current_timezone())
                     if abs((timezone.now()-local).total_seconds())>3600:
                         rejected.append({'event':event,'reason':'heure_locale_invalide'}); continue
-                    point=ControlPoint.objects.filter(id=item['point_id']).first()
+                    point_id=item['point_id']
+                    if not isinstance(point_id, int) or point_id < 1:
+                        raise ValueError('Point de contrôle invalide')
+                    point=ControlPoint.objects.filter(id=point_id).first()
                     if not point:
                         rejected.append({'event':event,'reason':'point_inconnu'}); continue
                 except (KeyError,ValueError,AttributeError):
                     rejected.append({'event':event,'reason':'format_invalide'}); continue
-                Passage.objects.create(badge=badge,point=point,local_time=local,device_id=item['device_id'],local_event_id=event,nonce=nonce)
+                try:
+                    with transaction.atomic():
+                        Passage.objects.create(badge=badge,point=point,local_time=local,device_id=device_id,local_event_id=event,nonce=nonce)
+                except IntegrityError:
+                    if Passage.objects.filter(local_event_id=event).exists():
+                        duplicates += 1; duplicate_events.append(event)
+                    else:
+                        rejected.append({'event':event,'reason':'badge_deja_utilise'})
+                    continue
                 accepted += 1; accepted_events.append(event)
         return Response({'accepted':accepted,'duplicates':duplicates,'rejected':rejected,'accepted_events':accepted_events,'duplicate_events':duplicate_events})
 
@@ -194,16 +239,7 @@ class BadgesView(APIView):
     def get(self, request):
         if not role(request.user, 'responsable'):
             return Response({'detail':'Accès refusé'}, status=403)
-        return Response([{'id':b.id,'student_id':b.student_id,'student':b.student.name,'state':b.state,'issued_at':b.issued_at.isoformat()} for b in Badge.objects.select_related('student').order_by('-issued_at')])
-    def post(self, request, badge_id=None):
-        if not role(request.user, 'responsable'):
-            return Response({'detail':'Accès refusé'}, status=403)
-        badge=Badge.objects.filter(id=badge_id).first()
-        if not badge:
-            return Response({'detail':'Badge introuvable'}, status=404)
-        badge.state=request.data.get('state','suspendu')
-        badge.save(update_fields=['state'])
-        return Response({'id':badge.id,'state':badge.state})
+        return Response([{'id':b.id,'student_id':b.student_id,'student':b.student.name,'state':b.state,'issued_at':b.issued_at.isoformat(),'replaced_by':b.replaced_by_id} for b in Badge.objects.select_related('student').order_by('-issued_at')])
 
 
 class ControlPointsManageView(APIView):
@@ -281,5 +317,116 @@ class SyncStatusView(APIView):
     def get(self, request):
         if not role(request.user, 'agent','responsable'):
             return Response({'detail':'Accès refusé'}, status=403)
-        passages=Passage.objects.all().order_by('-server_time')[:20]
-        return Response({'server_passages':Passage.objects.count(),'recent':[{'id':p.id,'student':p.badge.student.name,'point':p.point.label,'server_time':p.server_time.isoformat(),'state':p.state} for p in passages]})
+        passages=Passage.objects.select_related('point').all()
+        if role(request.user, 'agent'):
+            device_id=str(request.query_params.get('device_id',''))[:100]
+            if not device_id:
+                return Response({'server_passages':None,'recent':[]})
+            passages=passages.filter(device_id=device_id)
+        recent=passages.order_by('-server_time')[:20]
+        return Response({'server_passages':passages.count() if role(request.user,'responsable') else None,'recent':[{'id':p.id,'point':p.point.label,'server_time':p.server_time.isoformat(),'state':p.state} for p in recent]})
+    
+
+class BadgeActionView(APIView):
+    def post(self, request, badge_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        action = str(request.data.get('action','')).strip()
+        states = {'revoke':'révoqué', 'suspend':'suspendu', 'lose':'perdu'}
+        if action not in (*states.keys(), 'activate', 'reissue'):
+            return Response({'detail':'Action invalide'}, status=400)
+        with transaction.atomic():
+            badge = Badge.objects.select_for_update().select_related('student').filter(id=badge_id).first()
+            if not badge:
+                return Response({'detail':'Badge introuvable'}, status=404)
+            if action == 'reissue':
+                if badge.state != 'actif':
+                    return Response({'detail':'Seul le badge actif peut être réémis'}, status=409)
+                badge.state = 'révoqué'
+                badge.save(update_fields=['state'])
+                new_badge = Badge.objects.create(
+                    student=badge.student,
+                    serial=secrets.token_urlsafe(18),
+                    signing_secret=secrets.token_hex(32),
+                    state='actif',
+                )
+                badge.replaced_by = new_badge
+                badge.save(update_fields=['state', 'replaced_by'])
+                return Response({'id':new_badge.id,'state':new_badge.state,'student':new_badge.student.name,'replaces':badge.id}, status=201)
+            if action == 'activate' and Badge.objects.filter(student=badge.student, state='actif').exclude(pk=badge.pk).exists():
+                return Response({'detail':'Un badge actif existe déjà pour cet élève'}, status=409)
+            badge.state = 'actif' if action == 'activate' else states[action]
+            badge.save(update_fields=['state'])
+            return Response({'id':badge.id,'state':badge.state,'student':badge.student.name})
+
+
+class RouteManageView(APIView):
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        try:
+            student = Student.objects.get(id=request.data['student_id'])
+            point = ControlPoint.objects.get(id=request.data['point_id'])
+        except (Student.DoesNotExist, ControlPoint.DoesNotExist, KeyError):
+            return Response({'detail':'Élève ou point introuvable'}, status=400)
+        route = Route.objects.create(
+            student=student,
+            point=point,
+            sequence=int(request.data.get('sequence', 1)),
+            start_time=request.data.get('start_time','07:00'),
+            end_time=request.data.get('end_time','07:45'),
+            days=str(request.data.get('days','LMMJV'))
+        )
+        return Response({'id':route.id,'student':student.name,'point':point.label}, status=201)
+
+
+class ExceptionManageView(APIView):
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        try:
+            student = Student.objects.get(id=request.data['student_id'])
+            date = timezone.datetime.strptime(request.data['date'], '%Y-%m-%d').date()
+        except (Student.DoesNotExist, KeyError, ValueError):
+            return Response({'detail':'Élève ou date invalide'}, status=400)
+        exception = ExceptionDay.objects.create(
+            student=student,
+            date=date,
+            kind=str(request.data.get('kind','absence_justifiée')),
+            approved_by=request.user
+        )
+        return Response({'id':exception.id,'kind':exception.kind,'date':exception.date.isoformat()}, status=201)
+
+
+class NotifyAnomalyView(APIView):
+    def post(self, request, anomaly_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail':'Accès refusé'}, status=403)
+        anomaly = Anomaly.objects.select_related('student').filter(id=anomaly_id).first()
+        if not anomaly:
+            return Response({'detail':'Anomalie introuvable'}, status=404)
+        limit = max(0, settings.MESSAGE_DAILY_LIMIT)
+        today = timezone.localdate()
+        created = 0
+        blocked = 0
+        duplicates = 0
+        for link in ParentStudent.objects.filter(student=anomaly.student).select_related('parent'):
+            with transaction.atomic():
+                User.objects.select_for_update().filter(pk=link.parent_id).first()
+                prior = OutgoingMessage.objects.filter(parent=link.parent, anomaly=anomaly).first()
+                if prior:
+                    duplicates += 1
+                    continue
+                queued_today = OutgoingMessage.objects.filter(
+                    parent=link.parent,
+                    created_at__date=today,
+                    state__in=['pending', 'sending', 'sent'],
+                ).count()
+                text = f"Information scolaire : une anomalie {anomaly.type} a été enregistrée pour votre enfant."
+                if queued_today >= limit:
+                    OutgoingMessage.objects.create(parent=link.parent, anomaly=anomaly, text=text, state='suppressed', reason='plafond journalier')
+                    blocked += 1
+                else:
+                    OutgoingMessage.objects.create(parent=link.parent, anomaly=anomaly, text=text, state='pending', reason='En attente du fournisseur de notification')
+                    created += 1
+        return Response({'queued':created,'suppressed':blocked,'duplicates':duplicates,'anomaly':anomaly_id}, status=202)
