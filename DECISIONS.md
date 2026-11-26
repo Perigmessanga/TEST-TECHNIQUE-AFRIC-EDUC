@@ -59,6 +59,6 @@ Choix effectivement matérialisés dans le dépôt. Les limites ci-dessous sont 
 
 ## 10. Création des comptes parent en nombre
 
-- **Retenu :** le responsable peut créer un parent et rattacher plusieurs enfants, ou importer les rattachements depuis un CSV; les nouveaux comptes reçoivent un mot de passe temporaire aléatoire et doivent le changer à la première connexion.
+- **Retenu :** le responsable peut créer un parent et rattacher plusieurs enfants, importer les rattachements depuis un CSV, ou réinitialiser un mot de passe temporaire perdu; les nouveaux secrets sont aléatoires et imposent un changement à la première connexion.
 - **Écarté :** créer tous les parents avec un mot de passe commun ou leur permettre de consulter les données avant de changer le mot de passe temporaire.
 - **Raison :** réduire le travail manuel pour les grands effectifs et éviter un secret initial partagé. Les mots de passe temporaires ne sont exposés qu'à la création et doivent être transmis par un canal privé.

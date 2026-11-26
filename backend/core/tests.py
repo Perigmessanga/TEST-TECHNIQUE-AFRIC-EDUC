@@ -115,6 +115,7 @@ class PassageAPITests(TestCase):
 		]}, format='json')
 		self.assertEqual(response.status_code, 201)
 		self.assertEqual(response.data['created_parents'], 1)
+		self.assertEqual(response.data['reused_parents'], 0)
 		self.assertEqual(response.data['linked_children'], 2)
 		self.assertEqual(len(response.data['credentials']), 1)
 		parent = User.objects.get(username='new-parent')
@@ -122,6 +123,37 @@ class PassageAPITests(TestCase):
 		self.assertTrue(parent.profile.must_change_password)
 		self.assertEqual(ParentStudent.objects.filter(parent=parent).count(), 2)
 		self.assertTrue(parent.check_password(response.data['credentials'][0]['temporary_password']))
+
+	def test_existing_parent_is_reused_and_manager_can_reset_password(self):
+		self.authenticate_as(self.manager)
+		created = self.client.post('/api/parents/import/', {'rows': [{
+			'parent_username': self.parent.username,
+			'student_id': self.student.id,
+		}]}, format='json')
+		self.assertEqual(created.status_code, 201)
+		self.assertEqual(created.data['created_parents'], 0)
+		self.assertEqual(created.data['reused_parents'], 1)
+		self.assertEqual(created.data['credentials'], [])
+
+		reset = self.client.post(f'/api/parents/{self.other_parent.id}/reset-password/', {}, format='json')
+		self.assertEqual(reset.status_code, 200)
+		self.other_parent.refresh_from_db()
+		self.other_parent.profile.refresh_from_db()
+		self.assertTrue(self.other_parent.check_password(reset.data['temporary_password']))
+		self.assertTrue(self.other_parent.profile.must_change_password)
+
+		parent_client = APIClient()
+		login_response = parent_client.post('/api/login/', {
+			'login': self.other_parent.username,
+			'password': reset.data['temporary_password'],
+		}, format='json')
+		self.assertEqual(login_response.status_code, 200)
+		self.assertTrue(login_response.data['password_change_required'])
+
+	def test_agent_cannot_reset_parent_password(self):
+		self.authenticate_as(self.agent)
+		response = self.client.post(f'/api/parents/{self.parent.id}/reset-password/', {}, format='json')
+		self.assertEqual(response.status_code, 403)
 
 	def test_new_parent_must_change_temporary_password_before_access(self):
 		self.authenticate_as(self.manager)

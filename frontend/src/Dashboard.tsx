@@ -28,6 +28,7 @@ type Row = {
   email?: string
   detail?: string
   created_parents?: number
+  reused_parents?: number
   linked_children?: number
   credentials?: { username: string; temporary_password: string }[]
   label?: string
@@ -368,7 +369,7 @@ function ResponsibleView() {
   return <div>
     <nav className="mb-5 flex gap-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-2">{tabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-black ${tab === id ? 'bg-[#155eef] text-white shadow-md shadow-blue-100' : 'text-slate-600 hover:bg-slate-50'}`}>{label}</button>)}</nav>
     {notice && <p role="status" className="mb-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">{notice}</p>}
-    {tab === 'students' && <ParentAccountsCard students={students} onChanged={load} />}
+    {tab === 'students' && <ParentAccountsCard students={students} parents={parents} onChanged={load} />}
     {tab === 'overview' && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Élèves" value={students.length} /><Stat label="Badges actifs" value={badges.filter((badge) => badge.state === 'actif').length} /><Stat label="Passages" value={passages.length} /><Stat label="Anomalies ouvertes" value={anomalies.filter((item) => item.state === 'nouvelle').length} /><div className="sm:col-span-2 lg:col-span-4"><Card title="Actions rapides"><div className="flex flex-wrap gap-2"><Button onClick={() => void detectAnomalies()}>Détecter les absences échues</Button><Button variant="secondary" onClick={() => { setTab('students') }}>Ajouter un élève</Button><Button variant="secondary" onClick={() => { setTab('summary') }}>Générer la synthèse</Button></div></Card></div></div>}
     {tab === 'students' && <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><Card title="Inscrire un élève" subtitle="Un badge actif est créé automatiquement"><form onSubmit={studentSubmit} className="space-y-3"><Field label="Nom complet"><input name="name" required minLength={2} className={inputClass} /></Field><Field label="Classe"><input name="class_name" required className={inputClass} /></Field><Button type="submit" disabled={busy}>Créer l’élève</Button></form></Card><Card title="Élèves et classes"><DataTable headers={['Nom', 'Classe', 'Établissement', 'Badge', 'Actions']} rows={students.map((student) => [student.name, student.class_name, student.establishment, student.badge_state, <Button key={student.id} variant="secondary" onClick={() => { const name = window.prompt('Nom complet', student.name); const className = name === null ? null : window.prompt('Classe', student.class_name); if (name && className) void change('PATCH', `/api/students/${student.id}/`, { name, class_name: className }, 'Élève modifié.') }}>Modifier</Button>])} /></Card><Card title="Rattacher un enfant à un parent"><form onSubmit={parentLinkSubmit} className="grid gap-3 sm:grid-cols-3"><Field label="Compte parent"><select name="parent_id" required className={inputClass}>{parents.map((parent) => <option key={parent.id} value={parent.id}>{parent.username}</option>)}</select></Field><Field label="Élève"><select name="student_id" required className={inputClass}>{students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}</select></Field><div className="self-end"><Button type="submit" disabled={busy}>Rattacher</Button></div></form><DataTable headers={['Parent', 'Enfant', 'Action']} rows={parentLinks.map((link) => [link.parent, link.student, <Button key={link.id} variant="danger" onClick={() => void change('DELETE', `/api/parent-links/${link.id}/`, undefined, 'Rattachement supprimé.')}>Retirer</Button>])} /></Card></div>}
     {tab === 'badges' && <Card title="Cycle de vie des badges" subtitle="Jeton QR signé, usage unique et expiration configurée côté serveur"><DataTable headers={['Élève', 'État', 'Émis le', 'Actions']} rows={badges.map((badge) => [badge.student, badge.state, new Date(badge.issued_at || '').toLocaleDateString('fr-FR'), <div className="flex flex-wrap gap-1" key={badge.id}>{badge.state === 'actif' && <><Button onClick={() => void tokenFor({ id: badge.student_id, name: badge.student })}>QR provisoire</Button><Button variant="secondary" onClick={() => void badgeAction(badge, 'reissue')}>Réémettre</Button><Button variant="danger" onClick={() => void badgeAction(badge, 'suspend')}>Suspendre</Button></>}{badge.state === 'suspendu' && <Button onClick={() => void badgeAction(badge, 'activate')}>Réactiver</Button>}{badge.state !== 'révoqué' && badge.state !== 'actif' && <Button variant="danger" onClick={() => void badgeAction(badge, 'revoke')}>Révoquer</Button>}</div>])} /></Card>}
@@ -418,7 +419,7 @@ function parseCsv(source: string): string[][] {
   return rows
 }
 
-function ParentAccountsCard({ students, onChanged }: { students: Row[]; onChanged: () => Promise<void> }) {
+function ParentAccountsCard({ students, parents, onChanged }: { students: Row[]; parents: Row[]; onChanged: () => Promise<void> }) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [credentials, setCredentials] = useState<{ username: string; temporary_password: string }[]>([])
@@ -435,11 +436,36 @@ function ParentAccountsCard({ students, onChanged }: { students: Row[]; onChange
         body: JSON.stringify({ rows }),
       })
       setCredentials(result.credentials || [])
-      setSummary(`${result.created_parents || 0} compte(s) parent créé(s), ${result.linked_children || 0} rattachement(s) traité(s).`)
+      setSummary(`${result.created_parents || 0} nouveau(x) compte(s), ${result.reused_parents || 0} compte(s) existant(s) réutilisé(s), ${result.linked_children || 0} rattachement(s) traité(s).`)
       setMessage(result.detail || 'Import terminé.')
       await onChanged()
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Import impossible.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function resetParentPassword(parent: Row) {
+    const username = String(parent.username || '')
+    if (!window.confirm(`Réinitialiser le mot de passe de ${username} ? Son prochain accès exigera un changement de mot de passe.`)) return
+    setBusy(true)
+    setMessage('')
+    setCredentials([])
+    setSummary('')
+    try {
+      const result = await api<Row>(`/api/parents/${parent.id}/reset-password/`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      if (typeof result.username !== 'string' || typeof result.temporary_password !== 'string') {
+        throw new Error('Le serveur n’a pas retourné les nouveaux identifiants.')
+      }
+      setCredentials([{ username: result.username, temporary_password: result.temporary_password }])
+      setSummary(`Mot de passe temporaire réinitialisé pour ${result.username}.`)
+      setMessage(result.detail || 'Transmettez le nouveau mot de passe par un canal privé.')
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Réinitialisation impossible.')
     } finally {
       setBusy(false)
     }
@@ -547,9 +573,9 @@ function ParentAccountsCard({ students, onChanged }: { students: Row[]; onChange
   }
 
   return <div className="mb-5 grid gap-5 lg:grid-cols-2">
-    <Card title="Créer un compte parent" subtitle="Un mot de passe temporaire est généré et imposé au premier accès.">
+    <Card title="Créer un compte parent" subtitle="L’identifiant est le nom d’utilisateur choisi (ex. marie.martin). Le mot de passe est généré au hasard, jamais Test1234, et doit être changé au premier accès.">
       <form onSubmit={createParent} className="grid gap-3 sm:grid-cols-2">
-        <Field label="Identifiant"><input name="parent_username" required maxLength={150} className={inputClass} /></Field>
+        <Field label="Identifiant de connexion (nom d’utilisateur)"><input name="parent_username" placeholder="ex. marie.martin" required maxLength={150} className={inputClass} /></Field>
         <Field label="E-mail"><input name="parent_email" type="email" className={inputClass} /></Field>
         <Field label="Prénom"><input name="first_name" className={inputClass} /></Field>
         <Field label="Nom"><input name="last_name" className={inputClass} /></Field>
@@ -568,6 +594,14 @@ function ParentAccountsCard({ students, onChanged }: { students: Row[]; onChange
         <div className="flex flex-wrap gap-2"><Button type="submit" disabled={busy}>Importer le CSV</Button><Button variant="secondary" onClick={downloadTemplate}>Télécharger le modèle</Button><Button variant="secondary" onClick={downloadStudentRoster}>Exporter la liste des élèves</Button></div>
       </form>
     </Card>
+    <div className="lg:col-span-2">
+      <Card title="Comptes parents existants" subtitle="Un compte déjà existant est réutilisé sans modifier son mot de passe. Réinitialisez-le ici si son mot de passe temporaire a été perdu.">
+        <DataTable headers={['Identifiant de connexion', 'Action']} rows={parents.map((parent) => [
+          parent.username,
+          <Button key={parent.id} variant="secondary" disabled={busy} onClick={() => void resetParentPassword(parent)}>Réinitialiser le mot de passe</Button>,
+        ])} />
+      </Card>
+    </div>
     {(message || credentials.length > 0) && <div className="lg:col-span-2">
       <Card title="Résultat de l'import">
         {summary && <p className="mb-2 font-bold text-slate-800">{summary}</p>}

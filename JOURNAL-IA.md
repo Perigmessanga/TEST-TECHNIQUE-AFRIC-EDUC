@@ -8,7 +8,7 @@ Journal rédigé pour les travaux réellement présents dans le dépôt. Les int
 - **Django 5.2 / Django REST Framework :** `manage.py check`, tests API, commandes de migrations et commande de détection d'absences.
 - **SQLite :** base de test Django et base de développement; aucune migration de production n'a été exécutée.
 - **React, TypeScript, Vite et Tailwind :** interface par rôle, scan caméra QR (html5-qrcode), génération QR (qrcode.react), file offline, actions de gestion, build et ESLint.
-- **React et Django :** diagnostic caméra distinguant origine non sécurisée, API caméra absente, permission refusée, caméra absente ou déjà utilisée; création de comptes parent et import CSV de rattachements en lot.
+- **React et Django :** diagnostic caméra distinguant origine non sécurisée, API caméra absente, permission refusée, caméra absente ou déjà utilisée; création/import de comptes parent et réinitialisation contrôlée d'un mot de passe temporaire perdu.
 - **GitHub Actions :** workflow configuré pour exécuter les tests Python/Django, ESLint et le build frontend sur push et pull request. La dernière exécution distante consultée est verte pour le commit précédent; le changement actuel n'est pas encore poussé et devra déclencher une nouvelle exécution.
 - **Aucune IA vidéo n'a été utilisée dans ce passage de travail.** Les deux vidéos attendues restent à produire séparément et devront être ajoutées au journal avec les outils réellement utilisés.
 
@@ -21,6 +21,7 @@ Journal rédigé pour les travaux réellement présents dans le dépôt. Les int
 5. **Ne pas confondre compilation réussie et absence de défaut visuel.** Les écrans ont été étoffés et compilent; un parcours navigateur complet couvrant les trois rôles et le scan caméra n'a pas été effectué dans cette session.
 6. **Ne pas réutiliser un secret parent commun pour un import massif.** Chaque nouveau compte reçoit un secret temporaire aléatoire et doit le changer à la première connexion; le CSV d'import ne contient pas de mot de passe.
 7. **Ne pas diagnostiquer tous les échecs caméra comme un problème HTTPS.** `localhost` est normalement un contexte sécurisé; le composant distingue désormais l'origine non sécurisée des permissions navigateur et des caméras indisponibles.
+8. **Ne pas faire croire qu'un parent nouveau reçoit le mot de passe commun de démonstration.** L'identifiant est un nom d'utilisateur choisi; le mot de passe est aléatoire. Le résultat distingue les comptes créés des parents déjà existants, et le responsable dispose d'une action de réinitialisation qui remet l'obligation de changement au prochain accès.
 
 ## Vérifications réellement exécutées pendant l'implémentation
 

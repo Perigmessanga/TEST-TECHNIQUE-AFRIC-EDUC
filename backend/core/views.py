@@ -469,6 +469,7 @@ class ParentImportView(APIView):
         credentials = []
         links_to_create = []
         created_parents = 0
+        reused_parents = len(users)
         with transaction.atomic():
             for username, data in grouped.items():
                 parent = users.get(username)
@@ -493,10 +494,31 @@ class ParentImportView(APIView):
 
         return Response({
             'created_parents': created_parents,
+            'reused_parents': reused_parents,
             'linked_children': len(links_to_create),
             'credentials': credentials,
-            'detail': 'Comptes créés et rattachements traités. Les mots de passe temporaires ne seront affichés qu’une fois.',
+            'detail': 'Les comptes existants ont été réutilisés sans modifier leur mot de passe. Les mots de passe temporaires des nouveaux comptes ne sont affichés qu’une fois.',
         }, status=201)
+
+
+class ParentPasswordResetView(APIView):
+    def post(self, request, parent_id):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        parent = User.objects.filter(pk=parent_id, profile__role='parent').first()
+        if not parent:
+            return Response({'detail': 'Compte parent introuvable'}, status=404)
+        temporary_password = secrets.token_urlsafe(16)
+        parent.set_password(temporary_password)
+        parent.save(update_fields=['password'])
+        parent.profile.must_change_password = True
+        parent.profile.save(update_fields=['must_change_password'])
+        return Response({
+            'username': parent.username,
+            'temporary_password': temporary_password,
+            'password_change_required': True,
+            'detail': 'Mot de passe temporaire réinitialisé. Transmettez-le par un canal privé; il ne sera affiché qu’une fois.',
+        })
 
 
 class BadgesView(APIView):

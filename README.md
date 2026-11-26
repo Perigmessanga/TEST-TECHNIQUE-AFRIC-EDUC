@@ -49,9 +49,9 @@ Les comptes et données d'exemple ne sont pas des identifiants de production.
 
 ### Création et rattachement des parents
 
-Dans **Responsable → Élèves**, le formulaire permet de créer un compte parent et de sélectionner plusieurs enfants. Le mot de passe temporaire est généré aléatoirement, affiché une seule fois après création et doit être transmis au parent par un canal privé. Le parent doit le remplacer par un mot de passe d'au moins 12 caractères à sa première connexion.
+Dans **Responsable → Élèves**, le formulaire permet de créer un compte parent et de sélectionner plusieurs enfants. L'identifiant de connexion est le nom d'utilisateur choisi dans le formulaire; un identifiant numérique est accepté, mais un nom lisible est recommandé. Le mot de passe temporaire est généré aléatoirement — ce n'est pas `Test1234` —, affiché une seule fois après création et doit être transmis au parent par un canal privé. Le parent doit le remplacer par un mot de passe d'au moins 12 caractères à sa première connexion. `Test1234` ne concerne que les comptes de démonstration fournis par `seed.py`.
 
-Pour un import en lot, téléchargez d'abord la liste des élèves afin d'obtenir leurs identifiants, puis le modèle CSV. Les colonnes attendues sont `parent_username,parent_email,first_name,last_name,student_id`; répétez une ligne avec le même `parent_username` pour rattacher plusieurs enfants à un parent. Un compte parent déjà existant est réutilisé sans modifier son mot de passe. Les identifiants temporaires des nouveaux comptes sont retournés une seule fois et peuvent être téléchargés immédiatement; protégez ce fichier et supprimez-le après transmission.
+Pour un import en lot, téléchargez d'abord la liste des élèves afin d'obtenir leurs identifiants, puis le modèle CSV. Les colonnes attendues sont `parent_username,parent_email,first_name,last_name,student_id`; répétez une ligne avec le même `parent_username` pour rattacher plusieurs enfants à un parent. Un compte parent déjà existant est réutilisé sans modifier son mot de passe; le résultat distingue les comptes créés et réutilisés. Si le mot de passe temporaire a été perdu, le responsable peut réinitialiser celui du parent depuis la liste des comptes existants; le nouveau mot de passe est affiché une seule fois et le changement reste obligatoire.
 
 ## Migrations et bases
 
