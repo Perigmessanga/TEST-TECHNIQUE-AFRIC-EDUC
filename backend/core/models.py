@@ -103,3 +103,4 @@ class AICall(models.Model):
 class Profile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='profile')
     role = models.CharField(max_length=20, choices=[('agent','Agent'),('responsable','Responsable'),('parent','Parent')])
+    must_change_password = models.BooleanField(default=False)

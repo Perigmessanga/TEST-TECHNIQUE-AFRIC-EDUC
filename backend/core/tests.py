@@ -95,6 +95,74 @@ class PassageAPITests(TestCase):
 			{self.student.id, self.other_student.id},
 		)
 
+	def test_manager_can_bulk_create_parent_accounts_and_link_multiple_children(self):
+		self.authenticate_as(self.manager)
+		response = self.client.post('/api/parents/import/', {'rows': [
+			{
+				'parent_username': 'new-parent',
+				'parent_email': 'new-parent@example.com',
+				'first_name': 'Nouveau',
+				'last_name': 'Parent',
+				'student_id': self.student.id,
+			},
+			{
+				'parent_username': 'new-parent',
+				'parent_email': 'new-parent@example.com',
+				'first_name': 'Nouveau',
+				'last_name': 'Parent',
+				'student_id': self.other_student.id,
+			},
+		]}, format='json')
+		self.assertEqual(response.status_code, 201)
+		self.assertEqual(response.data['created_parents'], 1)
+		self.assertEqual(response.data['linked_children'], 2)
+		self.assertEqual(len(response.data['credentials']), 1)
+		parent = User.objects.get(username='new-parent')
+		self.assertEqual(parent.profile.role, 'parent')
+		self.assertTrue(parent.profile.must_change_password)
+		self.assertEqual(ParentStudent.objects.filter(parent=parent).count(), 2)
+		self.assertTrue(parent.check_password(response.data['credentials'][0]['temporary_password']))
+
+	def test_new_parent_must_change_temporary_password_before_access(self):
+		self.authenticate_as(self.manager)
+		created = self.client.post('/api/parents/import/', {'rows': [{
+			'parent_username': 'first-login-parent',
+			'student_id': self.student.id,
+		}]}, format='json')
+		password = created.data['credentials'][0]['temporary_password']
+		parent_client = APIClient()
+		login_response = parent_client.post('/api/login/', {
+			'login': 'first-login-parent',
+			'password': password,
+		}, format='json')
+		self.assertEqual(login_response.status_code, 200)
+		self.assertTrue(login_response.data['password_change_required'])
+		self.assertEqual(parent_client.get('/api/parent/children/').status_code, 403)
+		change = parent_client.post('/api/password/change/', {
+			'current_password': password,
+			'new_password': 'Parent-Personal-Password-2026',
+		}, format='json')
+		self.assertEqual(change.status_code, 200)
+		self.assertFalse(change.data['password_change_required'])
+		self.assertFalse(parent_client.get('/api/me/').data['password_change_required'])
+
+	def test_parent_import_is_forbidden_to_agent_and_validates_all_rows(self):
+		self.authenticate_as(self.agent)
+		forbidden = self.client.post('/api/parents/import/', {'rows': [{
+			'parent_username': 'blocked-parent',
+			'student_id': self.student.id,
+		}]}, format='json')
+		self.assertEqual(forbidden.status_code, 403)
+		self.assertFalse(User.objects.filter(username='blocked-parent').exists())
+
+		self.authenticate_as(self.manager)
+		invalid = self.client.post('/api/parents/import/', {'rows': [{
+			'parent_username': 'invalid-parent',
+			'student_id': 999999,
+		}]}, format='json')
+		self.assertEqual(invalid.status_code, 400)
+		self.assertFalse(User.objects.filter(username='invalid-parent').exists())
+
 	def test_badge_reissue_revokes_old_and_keeps_history(self):
 		self.authenticate_as(self.manager)
 		old_token = self.client.post(f'/api/badges/{self.student.id}/token/').data['token']

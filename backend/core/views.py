@@ -5,7 +5,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from django.conf import settings
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -15,13 +15,17 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Anomaly, Badge, ControlPoint, Passage, ParentStudent, Route, ExceptionDay, Student, Summary, OutgoingMessage, Establishment
+from .models import Anomaly, Badge, ControlPoint, Passage, ParentStudent, Profile, Route, ExceptionDay, Student, Summary, OutgoingMessage, Establishment
 from .services import create_anomaly
 from .summary_ai import generate_summary_text
 
 
 def role(user, *roles):
-    return hasattr(user, 'profile') and user.profile.role in roles
+    return (
+        hasattr(user, 'profile')
+        and not user.profile.must_change_password
+        and user.profile.role in roles
+    )
 
 
 class LoginView(APIView):
@@ -45,7 +49,31 @@ class LoginView(APIView):
         cache.delete(attempt_key)
         login(request, user)
         request.session.set_expiry(3600)
-        return Response({'ok':True,'role':user.profile.role,'name':user.get_full_name() or user.username})
+        return Response({
+            'ok': True,
+            'role': user.profile.role,
+            'name': user.get_full_name() or user.username,
+            'password_change_required': user.profile.must_change_password,
+        })
+
+
+class PasswordChangeView(APIView):
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'detail': 'Authentification requise'}, status=401)
+        current_password = str(request.data.get('current_password', ''))
+        new_password = str(request.data.get('new_password', ''))
+        if not request.user.check_password(current_password):
+            return Response({'detail': 'Mot de passe actuel incorrect'}, status=400)
+        if len(new_password) < 12:
+            return Response({'detail': 'Le nouveau mot de passe doit contenir au moins 12 caractères'}, status=400)
+        request.user.set_password(new_password)
+        request.user.save(update_fields=['password'])
+        profile = request.user.profile
+        profile.must_change_password = False
+        profile.save(update_fields=['must_change_password'])
+        update_session_auth_hash(request, request.user)
+        return Response({'ok': True, 'password_change_required': False})
 
 
 class LogoutView(APIView):
@@ -59,7 +87,11 @@ class MeView(APIView):
     def get(self, request):
         if not request.user.is_authenticated or not hasattr(request.user, 'profile'):
             return Response({'authenticated':False})
-        return Response({'name':request.user.get_full_name() or request.user.username,'role':request.user.profile.role})
+        return Response({
+            'name': request.user.get_full_name() or request.user.username,
+            'role': request.user.profile.role,
+            'password_change_required': request.user.profile.must_change_password,
+        })
 
 
 class ControlPointsView(APIView):
@@ -383,6 +415,88 @@ class ParentLinksView(APIView):
             return Response({'detail': 'Rattachement introuvable'}, status=404)
         link.delete()
         return Response(status=204)
+
+
+class ParentImportView(APIView):
+    def post(self, request):
+        if not role(request.user, 'responsable'):
+            return Response({'detail': 'Accès refusé'}, status=403)
+        rows = request.data.get('rows')
+        if not isinstance(rows, list) or not rows or len(rows) > 5000:
+            return Response({'detail': 'Fournissez entre 1 et 5 000 lignes parent-élève'}, status=400)
+
+        grouped = {}
+        student_ids = set()
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                return Response({'detail': f'Ligne {index} invalide'}, status=400)
+            username = str(row.get('parent_username', '')).strip()
+            email = str(row.get('parent_email', '')).strip()
+            first_name = str(row.get('first_name', '')).strip()
+            last_name = str(row.get('last_name', '')).strip()
+            try:
+                student_id = int(row.get('student_id'))
+            except (TypeError, ValueError):
+                return Response({'detail': f'Identifiant élève invalide à la ligne {index}'}, status=400)
+            if not username or len(username) > 150 or len(email) > 254:
+                return Response({'detail': f'Identifiant ou adresse e-mail invalide à la ligne {index}'}, status=400)
+            identity = (email.casefold(), first_name, last_name)
+            existing = grouped.get(username)
+            if existing and existing['identity'] != identity:
+                return Response({'detail': f'Les informations du parent « {username} » diffèrent entre les lignes'}, status=400)
+            grouped.setdefault(username, {
+                'identity': identity,
+                'email': email,
+                'first_name': first_name,
+                'last_name': last_name,
+                'student_ids': set(),
+            })['student_ids'].add(student_id)
+            student_ids.add(student_id)
+
+        found_student_ids = set(Student.objects.filter(id__in=student_ids).values_list('id', flat=True))
+        missing_students = student_ids - found_student_ids
+        if missing_students:
+            return Response({'detail': f'Élève(s) introuvable(s) : {", ".join(map(str, sorted(missing_students)))}'}, status=400)
+
+        users = {
+            user.username: user
+            for user in User.objects.filter(username__in=grouped).select_related('profile')
+        }
+        for username, user in users.items():
+            if not hasattr(user, 'profile') or user.profile.role != 'parent':
+                return Response({'detail': f'« {username} » existe déjà et n’est pas un compte parent'}, status=409)
+
+        credentials = []
+        links_to_create = []
+        created_parents = 0
+        with transaction.atomic():
+            for username, data in grouped.items():
+                parent = users.get(username)
+                if parent is None:
+                    temporary_password = secrets.token_urlsafe(16)
+                    parent = User.objects.create_user(
+                        username=username,
+                        email=data['email'],
+                        first_name=data['first_name'],
+                        last_name=data['last_name'],
+                        password=temporary_password,
+                    )
+                    Profile.objects.create(user=parent, role='parent', must_change_password=True)
+                    users[username] = parent
+                    created_parents += 1
+                    credentials.append({'username': username, 'temporary_password': temporary_password})
+                links_to_create.extend(
+                    ParentStudent(parent=parent, student_id=student_id)
+                    for student_id in data['student_ids']
+                )
+            ParentStudent.objects.bulk_create(links_to_create, ignore_conflicts=True)
+
+        return Response({
+            'created_parents': created_parents,
+            'linked_children': len(links_to_create),
+            'credentials': credentials,
+            'detail': 'Comptes créés et rattachements traités. Les mots de passe temporaires ne seront affichés qu’une fois.',
+        }, status=201)
 
 
 class BadgesView(APIView):

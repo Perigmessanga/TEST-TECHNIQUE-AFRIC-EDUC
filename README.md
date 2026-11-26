@@ -28,6 +28,8 @@ npm run dev
 
 Ouvrir l'adresse locale annoncée par Vite (port 5173 par défaut). Le proxy Vite transmet `/api` à Django; ne pas ouvrir directement le backend pour utiliser l'interface.
 
+Pour la caméra, ouvrez exactement `http://localhost:5173` ou `http://127.0.0.1:5173` sur la machine qui exécute le navigateur. Les adresses LAN telles que `http://192.168.x.x:5173` ne sont pas des origines localhost sécurisées et nécessitent HTTPS. Si l'origine est correcte, autorisez la caméra dans le navigateur, fermez les autres applications qui l'utilisent puis rechargez la page; l'interface affiche le motif précis du refus.
+
 ## Comptes de démonstration
 
 | Rôle | Identifiant | Mot de passe |
@@ -42,8 +44,14 @@ Les comptes et données d'exemple ne sont pas des identifiants de production.
 ## Parcours fonctionnels
 
 - **Agent :** choisit un point, lit le QR avec la caméra ou saisit le jeton, conserve les événements dans `localStorage`, affiche l'état de synchronisation et synchronise à la reconnexion. La file accepte les lots/reprises; les événements rejetés sont laissés visibles pour correction.
-- **Responsable :** crée/modifie les élèves, rattache ou détache leurs parents, crée des points et itinéraires, ajoute des exceptions, génère des QR temporaires, réémet/suspend/réactive/révoque les badges, consulte les passages, détecte les absences échues, traite les anomalies, gère les notifications en file et génère une synthèse par classe/date.
+- **Responsable :** crée/modifie les élèves, crée les comptes parents et rattache un ou plusieurs enfants, importe des milliers de rattachements depuis CSV, crée des points et itinéraires, ajoute des exceptions, génère des QR temporaires, réémet/suspend/réactive/révoque les badges, consulte les passages, détecte les absences échues, traite les anomalies, gère les notifications en file et génère une synthèse par classe/date.
 - **Parent :** voit uniquement ses enfants liés, leurs passages, anomalies et notifications enregistrées.
+
+### Création et rattachement des parents
+
+Dans **Responsable → Élèves**, le formulaire permet de créer un compte parent et de sélectionner plusieurs enfants. Le mot de passe temporaire est généré aléatoirement, affiché une seule fois après création et doit être transmis au parent par un canal privé. Le parent doit le remplacer par un mot de passe d'au moins 12 caractères à sa première connexion.
+
+Pour un import en lot, téléchargez d'abord la liste des élèves afin d'obtenir leurs identifiants, puis le modèle CSV. Les colonnes attendues sont `parent_username,parent_email,first_name,last_name,student_id`; répétez une ligne avec le même `parent_username` pour rattacher plusieurs enfants à un parent. Un compte parent déjà existant est réutilisé sans modifier son mot de passe. Les identifiants temporaires des nouveaux comptes sont retournés une seule fois et peuvent être téléchargés immédiatement; protégez ce fichier et supprimez-le après transmission.
 
 ## Migrations et bases
 

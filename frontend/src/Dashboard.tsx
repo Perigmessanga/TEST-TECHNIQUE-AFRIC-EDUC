@@ -22,6 +22,14 @@ type Row = {
   name?: string
   role?: Role
   authenticated?: boolean
+  password_change_required?: boolean
+  first_name?: string
+  last_name?: string
+  email?: string
+  detail?: string
+  created_parents?: number
+  linked_children?: number
+  credentials?: { username: string; temporary_password: string }[]
   label?: string
   type?: string
   token?: string
@@ -116,6 +124,7 @@ const inputClass = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2
 export default function Dashboard() {
   const [role, setRole] = useState<Role | null>(null)
   const [name, setName] = useState('')
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false)
   const [error, setError] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
   const [queue, setQueue] = useState<QueueItem[]>(() => {
@@ -131,6 +140,7 @@ export default function Dashboard() {
       if (data.authenticated !== false && data.role) {
         setRole(data.role)
         setName(data.name || '')
+        setPasswordChangeRequired(data.password_change_required === true)
       }
     }).catch(() => undefined)
     return () => {
@@ -151,17 +161,22 @@ export default function Dashboard() {
       if (!data.role) throw new Error('Rôle manquant dans la réponse du serveur.')
       setRole(data.role)
       setName(data.name || '')
+      setPasswordChangeRequired(data.password_change_required === true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Connexion impossible')
     }
   }
 
   async function logout() {
-    try { await api('/api/logout/', { method: 'POST' }) } finally { setRole(null); setName('') }
+    try { await api('/api/logout/', { method: 'POST' }) } finally { setRole(null); setName(''); setPasswordChangeRequired(false) }
   }
 
   if (!role) {
     return <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top_left,#eef5ff,transparent_38%),#f8fafc] p-5"><section className="w-full max-w-md rounded-[28px] border border-white bg-white p-8 shadow-[0_24px_70px_rgba(15,23,42,.12)]"><Brand /><div className="mt-9"><p className="text-xs font-black uppercase tracking-[0.18em] text-[#155eef]">Portail sécurisé</p><h1 className="mt-2 text-3xl font-black text-slate-950">Connexion</h1><p className="mt-2 text-sm text-slate-500">Accès agent, responsable ou parent</p></div><form onSubmit={login} className="mt-7 space-y-4"><Field label="Identifiant"><input name="login" autoComplete="username" required className={inputClass} /></Field><Field label="Mot de passe"><input name="password" type="password" minLength={8} autoComplete="current-password" required className={inputClass} /></Field>{error && <p role="alert" className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</p>}<button className="w-full rounded-xl bg-[#155eef] py-3.5 font-black text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700">Se connecter</button></form></section></main>
+  }
+
+  if (passwordChangeRequired) {
+    return <PasswordChangeScreen onChanged={() => setPasswordChangeRequired(false)} />
   }
 
   return <div className="min-h-screen bg-[#f4f7fb] text-slate-900"><header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur"><div className="mx-auto flex h-[76px] max-w-[1320px] items-center px-5"><Brand /><div className="ml-auto flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-xs font-black ${online ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-orange-700'}`}>{online ? 'En ligne' : 'Hors ligne'}</span><Button variant="secondary" onClick={logout}>Déconnexion</Button></div></div></header><main className="mx-auto max-w-[1320px] px-5 py-7"><div className="mb-6"><p className="text-xs font-black uppercase tracking-[0.16em] text-[#155eef]">Espace {role}</p><h1 className="mt-1 text-2xl font-black">Bonjour, {name}</h1></div>{role === 'agent' && <AgentView online={online} queue={queue} setQueue={setQueue} />}{role === 'responsable' && <ResponsibleView />}{role === 'parent' && <ParentView />}</main></div>
@@ -353,6 +368,7 @@ function ResponsibleView() {
   return <div>
     <nav className="mb-5 flex gap-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-2">{tabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-black ${tab === id ? 'bg-[#155eef] text-white shadow-md shadow-blue-100' : 'text-slate-600 hover:bg-slate-50'}`}>{label}</button>)}</nav>
     {notice && <p role="status" className="mb-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">{notice}</p>}
+    {tab === 'students' && <ParentAccountsCard students={students} onChanged={load} />}
     {tab === 'overview' && <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Stat label="Élèves" value={students.length} /><Stat label="Badges actifs" value={badges.filter((badge) => badge.state === 'actif').length} /><Stat label="Passages" value={passages.length} /><Stat label="Anomalies ouvertes" value={anomalies.filter((item) => item.state === 'nouvelle').length} /><div className="sm:col-span-2 lg:col-span-4"><Card title="Actions rapides"><div className="flex flex-wrap gap-2"><Button onClick={() => void detectAnomalies()}>Détecter les absences échues</Button><Button variant="secondary" onClick={() => { setTab('students') }}>Ajouter un élève</Button><Button variant="secondary" onClick={() => { setTab('summary') }}>Générer la synthèse</Button></div></Card></div></div>}
     {tab === 'students' && <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><Card title="Inscrire un élève" subtitle="Un badge actif est créé automatiquement"><form onSubmit={studentSubmit} className="space-y-3"><Field label="Nom complet"><input name="name" required minLength={2} className={inputClass} /></Field><Field label="Classe"><input name="class_name" required className={inputClass} /></Field><Button type="submit" disabled={busy}>Créer l’élève</Button></form></Card><Card title="Élèves et classes"><DataTable headers={['Nom', 'Classe', 'Établissement', 'Badge', 'Actions']} rows={students.map((student) => [student.name, student.class_name, student.establishment, student.badge_state, <Button key={student.id} variant="secondary" onClick={() => { const name = window.prompt('Nom complet', student.name); const className = name === null ? null : window.prompt('Classe', student.class_name); if (name && className) void change('PATCH', `/api/students/${student.id}/`, { name, class_name: className }, 'Élève modifié.') }}>Modifier</Button>])} /></Card><Card title="Rattacher un enfant à un parent"><form onSubmit={parentLinkSubmit} className="grid gap-3 sm:grid-cols-3"><Field label="Compte parent"><select name="parent_id" required className={inputClass}>{parents.map((parent) => <option key={parent.id} value={parent.id}>{parent.username}</option>)}</select></Field><Field label="Élève"><select name="student_id" required className={inputClass}>{students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}</select></Field><div className="self-end"><Button type="submit" disabled={busy}>Rattacher</Button></div></form><DataTable headers={['Parent', 'Enfant', 'Action']} rows={parentLinks.map((link) => [link.parent, link.student, <Button key={link.id} variant="danger" onClick={() => void change('DELETE', `/api/parent-links/${link.id}/`, undefined, 'Rattachement supprimé.')}>Retirer</Button>])} /></Card></div>}
     {tab === 'badges' && <Card title="Cycle de vie des badges" subtitle="Jeton QR signé, usage unique et expiration configurée côté serveur"><DataTable headers={['Élève', 'État', 'Émis le', 'Actions']} rows={badges.map((badge) => [badge.student, badge.state, new Date(badge.issued_at || '').toLocaleDateString('fr-FR'), <div className="flex flex-wrap gap-1" key={badge.id}>{badge.state === 'actif' && <><Button onClick={() => void tokenFor({ id: badge.student_id, name: badge.student })}>QR provisoire</Button><Button variant="secondary" onClick={() => void badgeAction(badge, 'reissue')}>Réémettre</Button><Button variant="danger" onClick={() => void badgeAction(badge, 'suspend')}>Suspendre</Button></>}{badge.state === 'suspendu' && <Button onClick={() => void badgeAction(badge, 'activate')}>Réactiver</Button>}{badge.state !== 'révoqué' && badge.state !== 'actif' && <Button variant="danger" onClick={() => void badgeAction(badge, 'revoke')}>Révoquer</Button>}</div>])} /></Card>}
@@ -367,6 +383,230 @@ function ResponsibleView() {
 
 function Stat({ label, value }: { label: string; value: number }) {
   return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black text-slate-500">{label}</p><p className="mt-2 text-3xl font-black text-slate-950">{value}</p></section>
+}
+
+function parseCsv(source: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let value = ''
+  let quoted = false
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (character === '"') {
+      if (quoted && source[index + 1] === '"') {
+        value += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (character === ',' && !quoted) {
+      row.push(value.trim())
+      value = ''
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && source[index + 1] === '\n') index += 1
+      row.push(value.trim())
+      if (row.some(Boolean)) rows.push(row)
+      row = []
+      value = ''
+    } else {
+      value += character
+    }
+  }
+  if (quoted) throw new Error('Le fichier CSV contient un guillemet non fermé.')
+  row.push(value.trim())
+  if (row.some(Boolean)) rows.push(row)
+  return rows
+}
+
+function ParentAccountsCard({ students, onChanged }: { students: Row[]; onChanged: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [credentials, setCredentials] = useState<{ username: string; temporary_password: string }[]>([])
+  const [summary, setSummary] = useState('')
+
+  async function importRows(rows: Row[]) {
+    setBusy(true)
+    setMessage('')
+    setCredentials([])
+    setSummary('')
+    try {
+      const result = await api<Row>('/api/parents/import/', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      })
+      setCredentials(result.credentials || [])
+      setSummary(`${result.created_parents || 0} compte(s) parent créé(s), ${result.linked_children || 0} rattachement(s) traité(s).`)
+      setMessage(result.detail || 'Import terminé.')
+      await onChanged()
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Import impossible.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function createParent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const values = new FormData(form)
+    const studentIds = [...form.querySelectorAll<HTMLSelectElement>('select[name="student_ids"]')[0].selectedOptions]
+      .map((option) => Number(option.value))
+    if (!studentIds.length) {
+      setMessage('Sélectionnez au moins un enfant.')
+      return
+    }
+    const username = String(values.get('parent_username') || '').trim()
+    const shared = {
+      parent_username: username,
+      parent_email: String(values.get('parent_email') || '').trim(),
+      first_name: String(values.get('first_name') || '').trim(),
+      last_name: String(values.get('last_name') || '').trim(),
+    }
+    await importRows(studentIds.map((student_id) => ({ ...shared, student_id })))
+    form.reset()
+  }
+
+  async function uploadCsv(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const file = new FormData(form).get('csv')
+    if (!(file instanceof File) || file.size === 0) {
+      setMessage('Choisissez un fichier CSV.')
+      return
+    }
+    try {
+      const parsed = parseCsv(await file.text())
+      const headers = parsed.shift()?.map((header) => header.replace(/^\uFEFF/, '').toLowerCase()) || []
+      const required = ['parent_username', 'parent_email', 'first_name', 'last_name', 'student_id']
+      if (required.some((header) => !headers.includes(header))) {
+        throw new Error(`Colonnes requises : ${required.join(', ')}`)
+      }
+      const rows = parsed.map((line, index) => {
+        const values = Object.fromEntries(headers.map((header, column) => [header, line[column] || '']))
+        const studentId = Number(values.student_id)
+        if (!values.parent_username?.trim() || !Number.isInteger(studentId) || studentId < 1) {
+          throw new Error(`Ligne ${index + 2} : identifiant parent ou élève invalide.`)
+        }
+        return {
+          parent_username: values.parent_username.trim(),
+          parent_email: values.parent_email.trim(),
+          first_name: values.first_name.trim(),
+          last_name: values.last_name.trim(),
+          student_id: studentId,
+        }
+      })
+      if (!rows.length) throw new Error('Le fichier ne contient aucune ligne de données.')
+      await importRows(rows)
+      form.reset()
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Lecture du CSV impossible.')
+    }
+  }
+
+  function downloadCredentials() {
+    const escapeCell = (value: string) => `"${value.replace(/"/g, '""')}"`
+    const csv = [
+      'username,temporary_password',
+      ...credentials.map((item) => `${escapeCell(item.username)},${escapeCell(item.temporary_password)}`),
+    ].join('\r\n')
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'identifiants-temporaires-parents.csv'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function downloadTemplate() {
+    const url = URL.createObjectURL(new Blob([
+      'parent_username,parent_email,first_name,last_name,student_id\r\nparent.martin,martin@example.com,Marie,Martin,1\r\n',
+    ], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'modele-rattachements-parents.csv'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function downloadStudentRoster() {
+    const escapeCell = (value: string) => `"${value.replace(/"/g, '""')}"`
+    const csv = [
+      'student_id,student_name,class_name',
+      ...students.map((student) => [
+        String(student.id || ''),
+        escapeCell(String(student.name || '')),
+        escapeCell(String(student.class_name || '')),
+      ].join(',')),
+    ].join('\r\n')
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'liste-eleves-passage.csv'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return <div className="mb-5 grid gap-5 lg:grid-cols-2">
+    <Card title="Créer un compte parent" subtitle="Un mot de passe temporaire est généré et imposé au premier accès.">
+      <form onSubmit={createParent} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Identifiant"><input name="parent_username" required maxLength={150} className={inputClass} /></Field>
+        <Field label="E-mail"><input name="parent_email" type="email" className={inputClass} /></Field>
+        <Field label="Prénom"><input name="first_name" className={inputClass} /></Field>
+        <Field label="Nom"><input name="last_name" className={inputClass} /></Field>
+        <Field label="Enfant(s) à rattacher">
+          <select name="student_ids" multiple required size={Math.min(Math.max(students.length, 3), 7)} className={inputClass}>
+            {students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.class_name}</option>)}
+          </select>
+        </Field>
+        <div className="self-end"><Button type="submit" disabled={busy || students.length === 0}>Créer et rattacher</Button></div>
+      </form>
+    </Card>
+    <Card title="Import en lot (CSV)" subtitle="Utile pour les grands effectifs; plusieurs lignes peuvent partager le même identifiant parent.">
+      <form onSubmit={uploadCsv} className="space-y-3">
+        <p className="text-xs leading-5 text-slate-600">Colonnes : <code>parent_username,parent_email,first_name,last_name,student_id</code>. Les parents existants sont réutilisés; leurs mots de passe ne changent pas.</p>
+        <input name="csv" type="file" accept=".csv,text/csv" required className={`${inputClass} file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-3 file:py-2 file:font-bold file:text-blue-700`} />
+        <div className="flex flex-wrap gap-2"><Button type="submit" disabled={busy}>Importer le CSV</Button><Button variant="secondary" onClick={downloadTemplate}>Télécharger le modèle</Button><Button variant="secondary" onClick={downloadStudentRoster}>Exporter la liste des élèves</Button></div>
+      </form>
+    </Card>
+    {(message || credentials.length > 0) && <div className="lg:col-span-2">
+      <Card title="Résultat de l'import">
+        {summary && <p className="mb-2 font-bold text-slate-800">{summary}</p>}
+        {message && <p role="status" className="mb-3 text-sm text-slate-600">{message}</p>}
+        {credentials.length > 0 && <>
+          <p className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">Copiez et transmettez ces mots de passe temporaires par un canal privé. Ils sont affichés une seule fois; le parent devra en choisir un nouveau à sa première connexion.</p>
+          <DataTable headers={['Identifiant', 'Mot de passe temporaire']} rows={credentials.map((item) => [item.username, <code key={item.username}>{item.temporary_password}</code>])} />
+          <Button onClick={downloadCredentials}>Télécharger les identifiants</Button>
+        </>}
+      </Card>
+    </div>}
+  </div>
+}
+
+function PasswordChangeScreen({ onChanged }: { onChanged: () => void }) {
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setBusy(true)
+    const form = event.currentTarget
+    const values = new FormData(form)
+    try {
+      await api('/api/password/change/', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: values.get('current_password'),
+          new_password: values.get('new_password'),
+        }),
+      })
+      onChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Changement de mot de passe impossible.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><Card title="Sécurisez votre compte" subtitle="Votre compte a été créé avec un mot de passe temporaire. Choisissez un mot de passe personnel d'au moins 12 caractères."><form onSubmit={submit} className="space-y-4"><Field label="Mot de passe temporaire"><input name="current_password" type="password" autoComplete="current-password" required className={inputClass} /></Field><Field label="Nouveau mot de passe"><input name="new_password" type="password" minLength={12} autoComplete="new-password" required className={inputClass} /></Field>{error && <p role="alert" className="text-sm font-bold text-red-700">{error}</p>}<Button type="submit" disabled={busy}>Changer le mot de passe</Button></form></Card></main>
 }
 
 function DataTable({ headers, rows }: { headers: string[]; rows: ReactNode[][] }) {

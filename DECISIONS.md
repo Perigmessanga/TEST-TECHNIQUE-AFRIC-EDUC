@@ -56,3 +56,9 @@ Choix effectivement matérialisés dans le dépôt. Les limites ci-dessous sont 
 - **Retenu :** backend calcule les quatre nombres depuis passages/itinéraires; gabarit exact sans clé; appel optionnel compatible OpenAI avec sortie JSON, contrôle strict des chiffres, une nouvelle tentative maximum, journal `AICall` et plafond journalier.
 - **Écarté :** laisser le modèle compter ou accepter un texte numérique non vérifié.
 - **Raison :** préserver l'exactitude et continuer sans réseau/clé. Le fournisseur réel n'a pas été appelé pendant les validations faute de clé de test; son comportement réseau n'est donc pas certifié en production.
+
+## 10. Création des comptes parent en nombre
+
+- **Retenu :** le responsable peut créer un parent et rattacher plusieurs enfants, ou importer les rattachements depuis un CSV; les nouveaux comptes reçoivent un mot de passe temporaire aléatoire et doivent le changer à la première connexion.
+- **Écarté :** créer tous les parents avec un mot de passe commun ou leur permettre de consulter les données avant de changer le mot de passe temporaire.
+- **Raison :** réduire le travail manuel pour les grands effectifs et éviter un secret initial partagé. Les mots de passe temporaires ne sont exposés qu'à la création et doivent être transmis par un canal privé.
