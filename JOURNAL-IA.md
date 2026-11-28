@@ -4,13 +4,14 @@ Journal rédigé pour les travaux réellement présents dans le dépôt. Les int
 
 ## Outils utilisés
 
-- **GitHub Copilot Chat dans VS Code, 24–25 novembre 2026 :** lecture des changements existants, aide à la correction Django/DRF, création des migrations/tests, implémentation d'API et composants React, revues des erreurs TypeScript/Django et rédaction des décisions/documentation. Le code a été relu et vérifié par commandes locales.
+- **GitHub Copilot Chat , 24–25 novembre 2026 :**  aide à la correction Django/DRF, création des migrations/tests, implémentation d'API et composants React, revues des erreurs TypeScript/Django et rédaction des décisions/documentation. Le code a été relu et vérifié par commandes locales.
 - **Django 5.2 / Django REST Framework :** `manage.py check`, tests API, commandes de migrations et commande de détection d'absences.
 - **SQLite :** base de test Django et base de développement; aucune migration de production n'a été exécutée.
 - **React, TypeScript, Vite et Tailwind :** interface par rôle, scan caméra QR (html5-qrcode), génération QR (qrcode.react), file offline, actions de gestion, build et ESLint.
 - **React et Django :** diagnostic caméra distinguant origine non sécurisée, API caméra absente, permission refusée, caméra absente ou déjà utilisée; création/import de comptes parent et réinitialisation contrôlée d'un mot de passe temporaire perdu.
 - **GitHub Actions :** workflow configuré pour exécuter les tests Python/Django, ESLint et le build frontend sur push et pull request. La dernière exécution distante consultée est verte pour le commit précédent; le changement actuel n'est pas encore poussé et devra déclencher une nouvelle exécution.
 - **Aucune IA vidéo n'a été utilisée dans ce passage de travail.** Les deux vidéos attendues restent à produire séparément et devront être ajoutées au journal avec les outils réellement utilisés.
+- **Capcut :** pour la realisation de la video capsule de communication et demonstration technique.
 
 ## Refus et corrections motivés
 
